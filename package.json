@@ -1,0 +1,28 @@
+{
+  "name": "@sterfive/global-mutex",
+  "version": "1.0.0",
+  "description": "File based mutex",
+  "main": "dist/source/index.js",
+  "types": "dist/source/index.d.ts",
+  "scripts": {
+    "build": "tsc -b",
+    "test": "npm run build && mocha",
+    "nyc": "nyc npm run test"
+  },
+  "keywords": [
+    "mutex"
+  ],
+  "author": "Etienne Rossignon (etienne.rossignon@gadz.org)",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/mocha": "^8.2.2",
+    "@types/node": "^14.14.37",
+    "mocha": "^8.3.2",
+    "nyc": "^15.1.0",
+    "release-it": "^14.5.0",
+    "should": "^13.2.3",
+    "source-map-support": "^0.5.19",
+    "ts-node": "^9.1.1",
+    "typescript": "^4.2.3"
+  }
+}
