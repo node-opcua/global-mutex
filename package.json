@@ -1,5 +1,5 @@
 {
-  "name": "@sterfive/global-mutex",
+  "name": "@ster5/global-mutex",
   "version": "1.0.0",
   "description": "File based mutex",
   "main": "dist/source/index.js",
