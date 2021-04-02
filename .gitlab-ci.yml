@@ -12,6 +12,7 @@ cache:
 test_async:
   script:
     - npm install
-    - node run test
-    
+    - npm run build
+    - npm run test
+
 

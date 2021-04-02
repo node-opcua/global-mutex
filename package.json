@@ -10,7 +10,7 @@
     "nyc": "nyc npm run test"
   },
   "keywords": [
-    "mutex"
+    "mutex", "lock","locking", "filelock", "cross-process"
   ],
   "author": "Etienne Rossignon (etienne.rossignon@gadz.org)",
   "license": "MIT",

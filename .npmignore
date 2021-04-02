@@ -1,0 +1,10 @@
+test
+.nyc_output/
+*.tgz
+*.js.map
+source/
+.gitlab-ci.yml
+.mocharc.yml
+.prettierrc
+tsconfig.json
+*.tsbuildinfo

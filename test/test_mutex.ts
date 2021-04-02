@@ -74,7 +74,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     );
 
     verif.sort().should.eql([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
-    duration.should.be.greaterThan(4 * retryInterval);
+    duration.should.be.greaterThan(3 * retryInterval);
   });
   it("T4- should handle a exception in action", async () => {
     let _err: Error | null = null;
