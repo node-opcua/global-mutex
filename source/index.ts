@@ -43,10 +43,10 @@ function smartRemove(file: string) {
   }
 
 }
-async function removeIfTooOld(
+function removeIfTooOld(
   lockfile: string,
   maxStaleDuration: number
-): Promise<boolean> {
+): boolean {
   const sentinel = toSentinel(lockfile);
   try {
     const stat = fs.statSync(sentinel);
@@ -104,12 +104,12 @@ async function lock(options: MutexOptions): Promise<void> {
   }
   options._id = 1;
   if (_safeGuard[options.lockfile]) {
-    // already lock  by a internal process : lets wait"
+    // already lock  by a internal process : let's wait"
     await pause(100);
     return lock(options);
   }
 
-  const reallyLocked = await removeIfTooOld(
+  const reallyLocked = removeIfTooOld(
     options.lockfile,
     options.maxStaleDuration!
   );
@@ -203,7 +203,7 @@ function adjustOptions(options: MutexOptions): MutexOptions2 {
   if (fs.existsSync(options.lockfile) && fs.lstatSync(options.lockfile).isDirectory()) {
     throw new Error("Invalid lockfile specified (cannot be a existing folder):" + options.lockfile);
   }
-  
+
   options.maxStaleDuration =
     !options.maxStaleDuration || options.maxStaleDuration <= 100
       ? defaultStaleDuration
