@@ -3,6 +3,8 @@ import * as fs from "fs";
 import should from "should";
 
 import { withLock, resetLock } from "../source";
+import { isAbsolute } from "node:path";
+import { rejects } from "node:assert";
 
 async function pause(duration: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, duration));
@@ -52,7 +54,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
           nbFunctionInExecutionMax
         );
 
-        await pause(Math.random() * 10);
+        //await pause(Math.random() * 10);
         verif.push(n);
         nbFunctionInExecution -= 1;
       });
@@ -160,5 +162,44 @@ describe("File Mutex", function (this: Mocha.Suite) {
 
     result.should.eql(42);
     counter.should.be.greaterThan(6);
+  });
+
+  async function returnWithDelay<T>(n: T): Promise<T> {
+    return new Promise<T>(resolve=> setImmediate(()=>resolve(n)));
+  }
+  it("T7 - Lock then Lock", async () => {
+
+    const result = await new Promise<number>(resolve=>
+      withLock({lockfile}, 
+          async ()=> returnWithDelay(21)
+      ).then(
+        (value)=> 
+          withLock<number>({lockfile}, 
+            async ()=>returnWithDelay(value*2))
+          ).then(resolve));
+      result.should.eql(42);
+  });
+  it("T8 - Trying to lock a file that cannot be created - in a missing folder", async () =>{
+    const lockfile1 = path.join(path.dirname(lockfile), "missing_folder", path.basename(lockfile));
+
+    let err: Error| null= null;
+    try {
+      const result= await   withLock<number>({lockfile: lockfile1}, async ()=> returnWithDelay(21));
+      result.should.eql(42);  
+    } catch(_e) { err =_e };
+    should.exist(err);
+    err!.message.should.match(/Invalid lockfile/);
+
+  });
+  it("T9 - Trying to lock a file that cannot be created - because lock is a folder !", async () =>{
+    const lockfile1 = path.join(path.dirname(lockfile));
+    let err: Error| null= null;
+    try {
+      const result= await   withLock<number>({lockfile: lockfile1}, async ()=> returnWithDelay(21));
+      result.should.eql(42);  
+    } catch(_e) { err =_e };
+    should.exist(err);
+    err!.message.should.match(/Invalid lockfile/);
+
   });
 });

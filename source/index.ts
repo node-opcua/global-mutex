@@ -1,4 +1,5 @@
 import * as fs from "fs";
+import * as path from "path";
 import assert from "assert";
 
 export const defaultStaleDuration = 2 * 60 * 1000; // two minutes
@@ -113,7 +114,7 @@ async function lock(options: MutexOptions): Promise<void> {
     options.maxStaleDuration!
   );
   if (reallyLocked) {
-    await pause(100);
+    await pause(options.retryInterval!);
     return lock(options);
   }
   const sentinel = toSentinel(options.lockfile);
@@ -194,6 +195,15 @@ export async function withLock<T>(
   }
 }
 function adjustOptions(options: MutexOptions): MutexOptions2 {
+
+  // check lock file
+  if (!options.lockfile || !fs.existsSync(path.dirname(options.lockfile))) {
+      throw new Error("Invalid lockfile specified :" + options.lockfile);
+  }
+  if (fs.existsSync(options.lockfile) && fs.lstatSync(options.lockfile).isDirectory()) {
+    throw new Error("Invalid lockfile specified (cannot be a existing folder):" + options.lockfile);
+  }
+  
   options.maxStaleDuration =
     !options.maxStaleDuration || options.maxStaleDuration <= 100
       ? defaultStaleDuration
