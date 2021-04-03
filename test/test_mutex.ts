@@ -5,6 +5,7 @@ import should from "should";
 import { withLock, resetLock } from "../source";
 import { isAbsolute } from "node:path";
 import { rejects } from "node:assert";
+import { start } from "node:repl";
 
 async function pause(duration: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, duration));
@@ -40,7 +41,9 @@ describe("File Mutex", function (this: Mocha.Suite) {
   });
   it("T3- should excute 10 parallel tasks sequencially due to lock ", async () => {
     const retryInterval = 200;
-    const startTime = Date.now();
+    const NS_PER_SEC = 1e9;
+    const MS_PER_NS = 1e-6
+    const startTime = process.hrtime();
 
     const verif: number[] = [];
     let nbFunctionInExecution = 0;
@@ -53,8 +56,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
           nbFunctionInExecution,
           nbFunctionInExecutionMax
         );
-
-        //await pause(Math.random() * 10);
+        await pause(Math.random() * 10);
         verif.push(n);
         nbFunctionInExecution -= 1;
       });
@@ -66,8 +68,8 @@ describe("File Mutex", function (this: Mocha.Suite) {
     }
     await Promise.all(promises);
 
-    const endTime = Date.now();
-    const duration = endTime - startTime;
+    const diff = process.hrtime(startTime);
+    const duration = (diff[0] * NS_PER_SEC + diff[1])  * MS_PER_NS;
 
     nbFunctionInExecution.should.eql(0);
     nbFunctionInExecutionMax.should.eql(
