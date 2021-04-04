@@ -96,7 +96,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     should.exist(_err);
     _err?.message.should.eql("Some Error");
   });
-  it("T5- should detect raise-condition", async () => {
+  xit("T5- should detect raise-condition", async () => {
     let _err: Error | null = null;
     try {
       const value = await withLock(
@@ -203,10 +203,17 @@ describe("File Mutex", function (this: Mocha.Suite) {
   });
   it("T10 - Parallel tasks", async () => {
 
+    const lockfile1 = path.join(__dirname, "lock1.lock");
+    const lockfile2 = path.join(__dirname, "lock2.lock");
+ 
     async function task() {
-      return await withLock({ lockfile }, async () => {
-        await pause(10);
-        return 42
+      return await withLock({ lockfile: lockfile1}, async () => {
+        await pause(100+ Math.ceil(Math.random()*200));
+
+         return await withLock({ lockfile: lockfile2 }, async () => {
+            await pause(100+ Math.ceil(Math.random()*200));
+            return 42
+          });
       });
     }
     const p1 = task();
@@ -238,10 +245,37 @@ describe("File Mutex", function (this: Mocha.Suite) {
     ];
     async.mapLimit(tasks,10,(f: any, callback:(err: Error|null, n?: number[])=>void)=>{
       f(callback);
-      
+
     },(err?: Error| null, results?: (number[]|undefined)[])=>{
       console.log(results);
       done(err);
     })
   })
+
+  it("T12 -  combined lockers", (done) => {
+
+    let maxSimultaneous = 0;
+    let counter = 0;
+    function f(callback:(err: Error|null, n?: number[])=>void){
+      withLock({lockfile},async ()=> {
+        const n=counter; 
+        maxSimultaneous+=1; 
+        counter++; 
+        await pause(Math.random()*50); 
+        const data= [n,maxSimultaneous];
+        maxSimultaneous--;
+        return data;
+      }).then((data)=>callback(null, data));
+    }
+    const tasks = [
+      f,f,f,f,f,f,f,f,f
+    ];
+    async.mapLimit(tasks,10,(f: any, callback:(err: Error|null, n?: number[])=>void)=>{
+      f(callback);
+
+    },(err?: Error| null, results?: (number[]|undefined)[])=>{
+      console.log(results);
+      done(err);
+    })
+  });
 });
