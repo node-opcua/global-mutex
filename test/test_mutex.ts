@@ -40,7 +40,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
   it("T3- should excute 10 parallel tasks sequencially due to lock ", async () => {
     const retryInterval = 200;
     const NS_PER_SEC = 1e9;
-    const MS_PER_NS = 1e-6
+    const MS_PER_NS = 1e-6;
     const startTime = process.hrtime();
 
     const verif: number[] = [];
@@ -91,7 +91,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
         }
       );
     } catch (err) {
-      _err = err;
+      _err = err as Error;
     }
     should.exist(_err);
     _err?.message.should.eql("Some Error");
@@ -117,7 +117,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
         }
       );
     } catch (err) {
-      _err = err;
+      _err = err as Error;
     }
     _err?.message.should.match(/Lock rentrancy detected/);
   });
@@ -137,11 +137,11 @@ describe("File Mutex", function (this: Mocha.Suite) {
     let t: NodeJS.Timeout;
     function pulse() {
       t = setTimeout(async () => {
-        fs.writeFileSync(sentinel, "Hello World + " + (new Date()).toUTCString());
+        fs.writeFileSync(sentinel, "Hello World + " + new Date().toUTCString());
         counter += 1;
         // console.log("pulse", fs.statSync(sentinel).mtime.toISOString());
         pulse();
-      }, 200)
+      }, 200);
     }
     pulse();
     await pause(300);
@@ -165,55 +165,63 @@ describe("File Mutex", function (this: Mocha.Suite) {
   });
 
   async function returnWithDelay<T>(n: T): Promise<T> {
-    return new Promise<T>(resolve => setImmediate(() => resolve(n)));
+    return new Promise<T>((resolve) => setImmediate(() => resolve(n)));
   }
   it("T7 - Lock then Lock", async () => {
-
-    const result = await new Promise<number>(resolve =>
-      withLock({ lockfile },
-        async () => returnWithDelay(21)
-      ).then(
-        (value) =>
-          withLock<number>({ lockfile },
-            async () => returnWithDelay(value * 2))
-      ).then(resolve));
+    const result = await new Promise<number>((resolve) =>
+      withLock({ lockfile }, async () => returnWithDelay(21))
+        .then((value) =>
+          withLock<number>({ lockfile }, async () => returnWithDelay(value * 2))
+        )
+        .then(resolve)
+    );
     result.should.eql(42);
   });
   it("T8 - Trying to lock a file that cannot be created - in a missing folder", async () => {
-    const lockfile1 = path.join(path.dirname(lockfile), "missing_folder", path.basename(lockfile));
+    const lockfile1 = path.join(
+      path.dirname(lockfile),
+      "missing_folder",
+      path.basename(lockfile)
+    );
 
     let err: Error | null = null;
     try {
-      const result = await withLock<number>({ lockfile: lockfile1 }, async () => returnWithDelay(21));
+      const result = await withLock<number>({ lockfile: lockfile1 }, async () =>
+        returnWithDelay(21)
+      );
       result.should.eql(42);
-    } catch (_e) { err = _e };
+    } catch (_e) {
+      err = _e as Error;
+    }
     should.exist(err);
     err!.message.should.match(/Invalid lockfile/);
-
   });
   it("T9 - Trying to lock a file that cannot be created - because lock is a folder !", async () => {
     const lockfile1 = path.join(path.dirname(lockfile));
     let err: Error | null = null;
     try {
-      const result = await withLock<number>({ lockfile: lockfile1 }, async () => returnWithDelay(21));
+      const result = await withLock<number>({ lockfile: lockfile1 }, async () =>
+        returnWithDelay(21)
+      );
       result.should.eql(42);
-    } catch (_e) { err = _e };
+    } catch (_e) {
+      err = _e as Error;
+    }
     should.exist(err);
     err!.message.should.match(/Invalid lockfile/);
   });
   it("T10 - Parallel tasks", async () => {
-
     const lockfile1 = path.join(__dirname, "lock1.lock");
     const lockfile2 = path.join(__dirname, "lock2.lock");
- 
-    async function task() {
-      return await withLock({ lockfile: lockfile1}, async () => {
-        await pause(100+ Math.ceil(Math.random()*200));
 
-         return await withLock({ lockfile: lockfile2 }, async () => {
-            await pause(100+ Math.ceil(Math.random()*200));
-            return 42
-          });
+    async function task() {
+      return await withLock({ lockfile: lockfile1 }, async () => {
+        await pause(100 + Math.ceil(Math.random() * 200));
+
+        return await withLock({ lockfile: lockfile2 }, async () => {
+          await pause(100 + Math.ceil(Math.random() * 200));
+          return 42;
+        });
       });
     }
     const p1 = task();
@@ -225,57 +233,59 @@ describe("File Mutex", function (this: Mocha.Suite) {
     const result = await Promise.all([p1, p2, p3, p4, p5, p6]);
     result.should.eql([42, 42, 42, 42, 42, 42]);
   });
-  it("T11 -  async", (done)=>{
-
+  it("T11 -  async", (done) => {
     let counter = 10;
     let maxSimultaneous = 0;
-    function f(callback:(err: Error|null, n?: number[])=>void){
-      withLock({lockfile},async ()=> {
-        const n=counter; 
-        maxSimultaneous+=1; 
-        counter++; 
-        await pause(Math.random()*50); 
-        const data= [n,maxSimultaneous];
+    function f(callback: (err: Error | null, n?: number[]) => void) {
+      withLock({ lockfile }, async () => {
+        const n = counter;
+        maxSimultaneous += 1;
+        counter++;
+        await pause(Math.random() * 50);
+        const data = [n, maxSimultaneous];
         maxSimultaneous--;
         return data;
-      }).then((data)=>callback(null, data));
+      }).then((data) => callback(null, data));
     }
-    const tasks = [
-      f,f,f,f,f,f,f,f,f
-    ];
-    async.mapLimit(tasks,10,(f: any, callback:(err: Error|null, n?: number[])=>void)=>{
-      f(callback);
-
-    },(err?: Error| null, results?: (number[]|undefined)[])=>{
-      console.log(results);
-      done(err);
-    })
-  })
+    const tasks = [f, f, f, f, f, f, f, f, f];
+    async.mapLimit(
+      tasks,
+      10,
+      (f: any, callback: (err: Error | null, n?: number[]) => void) => {
+        f(callback);
+      },
+      (err?: Error | null, results?: (number[] | undefined)[]) => {
+        console.log(results);
+        done(err);
+      }
+    );
+  });
 
   it("T12 -  combined lockers", (done) => {
-
     let maxSimultaneous = 0;
     let counter = 0;
-    function f(callback:(err: Error|null, n?: number[])=>void){
-      withLock({lockfile},async ()=> {
-        const n=counter; 
-        maxSimultaneous+=1; 
-        counter++; 
-        await pause(Math.random()*50); 
-        const data= [n,maxSimultaneous];
+    function f(callback: (err: Error | null, n?: number[]) => void) {
+      withLock({ lockfile }, async () => {
+        const n = counter;
+        maxSimultaneous += 1;
+        counter++;
+        await pause(Math.random() * 50);
+        const data = [n, maxSimultaneous];
         maxSimultaneous--;
         return data;
-      }).then((data)=>callback(null, data));
+      }).then((data) => callback(null, data));
     }
-    const tasks = [
-      f,f,f,f,f,f,f,f,f
-    ];
-    async.mapLimit(tasks,10,(f: any, callback:(err: Error|null, n?: number[])=>void)=>{
-      f(callback);
-
-    },(err?: Error| null, results?: (number[]|undefined)[])=>{
-      console.log(results);
-      done(err);
-    })
+    const tasks = [f, f, f, f, f, f, f, f, f];
+    async.mapLimit(
+      tasks,
+      10,
+      (f: any, callback: (err: Error | null, n?: number[]) => void) => {
+        f(callback);
+      },
+      (err?: Error | null, results?: (number[] | undefined)[]) => {
+        console.log(results);
+        done(err);
+      }
+    );
   });
 });
