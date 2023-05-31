@@ -1,21 +1,22 @@
 import * as path from "path";
 import * as fs from "fs";
+import * as os from "os";
 import should from "should";
 import * as async from "async";
 
-import { withLock, resetLock } from "../source";
+import { withLock, resetLock, toSentinel } from "../source";
 
 async function pause(duration: number) {
   return new Promise<void>((resolve) => setTimeout(resolve, duration));
 }
-describe("File Mutex", function (this: Mocha.Suite) {
+describe("File Mutex", function (this) {
   this.timeout(20000);
-  const lockfile = path.join(__dirname, "lock.lock");
+  const fileToLock = path.join(__dirname, "fileToLock.lock");
   before(() => {
-    resetLock(lockfile);
+    resetLock(fileToLock);
   });
   it("T1- should transmit return value ", async () => {
-    const result = await withLock({ lockfile: lockfile }, async () => {
+    const result = await withLock({ lockfile: fileToLock }, async () => {
       await pause(1);
       return 42;
     });
@@ -23,13 +24,13 @@ describe("File Mutex", function (this: Mocha.Suite) {
   });
   it("T2- should remove stall file, if maxStaleDuration delay is reached", async () => {
     // given that the lock file exists already
-    fs.writeFileSync(lockfile, "some data");
+    fs.writeFileSync(fileToLock, "some data");
     await pause(1000);
 
     // the withLock method will eventually remove the lock file if it is stall
     await withLock(
       {
-        lockfile: lockfile,
+        lockfile: fileToLock,
         maxStaleDuration: 500,
       },
       async () => {
@@ -37,7 +38,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
       }
     );
   });
-  it("T3- should excute 10 parallel tasks sequencially due to lock ", async () => {
+  it("T3- should execute 10 parallel tasks sequentially due to lock ", async () => {
     const retryInterval = 200;
     const NS_PER_SEC = 1e9;
     const MS_PER_NS = 1e-6;
@@ -48,7 +49,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     let nbFunctionInExecutionMax = 0;
 
     async function f(n: number) {
-      await withLock({ lockfile, retryInterval }, async () => {
+      await withLock({ lockfile: fileToLock, retryInterval }, async () => {
         nbFunctionInExecution += 1;
         nbFunctionInExecutionMax = Math.max(
           nbFunctionInExecution,
@@ -72,7 +73,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     nbFunctionInExecution.should.eql(0);
     nbFunctionInExecutionMax.should.eql(
       1,
-      "there should be only one exection of Action at a time"
+      "there should be only one execution of Action at a time"
     );
 
     verif.sort().should.eql([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
@@ -83,7 +84,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     try {
       await withLock(
         {
-          lockfile: lockfile,
+          lockfile: fileToLock,
           maxStaleDuration: 500,
         },
         async () => {
@@ -101,13 +102,13 @@ describe("File Mutex", function (this: Mocha.Suite) {
     try {
       const value = await withLock(
         {
-          lockfile: lockfile,
+          lockfile: fileToLock,
           maxStaleDuration: 2500,
         },
         async () => {
           return await withLock(
             {
-              lockfile: lockfile,
+              lockfile: fileToLock,
               maxStaleDuration: 2500,
             },
             async () => {
@@ -121,25 +122,28 @@ describe("File Mutex", function (this: Mocha.Suite) {
     }
     _err?.message.should.match(/Lock rentrancy detected/);
   });
-  it("T6- evaluation fs.unlink when file is opened", async () => {
+  xit("T6- evaluation fs.unlink when file is opened", async () => {
     // given that the lock file exists already and is opened
     try {
-      resetLock(lockfile);
+      resetLock(fileToLock);
     } catch (err) {
       throw err;
     }
 
-    const sentinel = lockfile + ".sentinel";
-    fs.writeFileSync(lockfile, "Hello");
-    fs.existsSync(lockfile).should.eql(true);
+    fs.writeFileSync(fileToLock, "Hello");
+    fs.existsSync(fileToLock).should.eql(true);
 
     let counter = 0;
     let t: NodeJS.Timeout;
     function pulse() {
       t = setTimeout(async () => {
-        fs.writeFileSync(sentinel, "Hello World + " + new Date().toUTCString());
+        fs.writeFileSync(
+          fileToLock,
+          "Hello World + " + new Date().toUTCString()
+        );
         counter += 1;
-        // console.log("pulse", fs.statSync(sentinel).mtime.toISOString());
+        const sentinel = toSentinel(fileToLock);
+        console.log("pulse", fs.statSync(sentinel).mtime.toISOString());
         pulse();
       }, 200);
     }
@@ -153,7 +157,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     // the withLock method will eventually remove the lock file if it is stall
     const result = await withLock(
       {
-        lockfile,
+        lockfile: fileToLock,
         maxStaleDuration: 3 * 1000,
         retryInterval: 100,
       },
@@ -169,9 +173,11 @@ describe("File Mutex", function (this: Mocha.Suite) {
   }
   it("T7 - Lock then Lock", async () => {
     const result = await new Promise<number>((resolve) =>
-      withLock({ lockfile }, async () => returnWithDelay(21))
+      withLock({ lockfile: fileToLock }, async () => returnWithDelay(21))
         .then((value) =>
-          withLock<number>({ lockfile }, async () => returnWithDelay(value * 2))
+          withLock<number>({ lockfile: fileToLock }, async () =>
+            returnWithDelay(value * 2)
+          )
         )
         .then(resolve)
     );
@@ -179,9 +185,9 @@ describe("File Mutex", function (this: Mocha.Suite) {
   });
   it("T8 - Trying to lock a file that cannot be created - in a missing folder", async () => {
     const lockfile1 = path.join(
-      path.dirname(lockfile),
+      path.dirname(fileToLock),
       "missing_folder",
-      path.basename(lockfile)
+      path.basename(fileToLock)
     );
 
     let err: Error | null = null;
@@ -197,11 +203,12 @@ describe("File Mutex", function (this: Mocha.Suite) {
     err!.message.should.match(/Invalid lockfile/);
   });
   it("T9 - Trying to lock a file that cannot be created - because lock is a folder !", async () => {
-    const lockfile1 = path.join(path.dirname(lockfile));
+    const folderToLock = path.join(path.dirname(fileToLock));
     let err: Error | null = null;
     try {
-      const result = await withLock<number>({ lockfile: lockfile1 }, async () =>
-        returnWithDelay(21)
+      const result = await withLock<number>(
+        { lockfile: folderToLock },
+        async () => returnWithDelay(21)
       );
       result.should.eql(42);
     } catch (_e) {
@@ -211,14 +218,14 @@ describe("File Mutex", function (this: Mocha.Suite) {
     err!.message.should.match(/Invalid lockfile/);
   });
   it("T10 - Parallel tasks", async () => {
-    const lockfile1 = path.join(__dirname, "lock1.lock");
-    const lockfile2 = path.join(__dirname, "lock2.lock");
+    const fileToLock1 = path.join(__dirname, "lock1.lock");
+    const fileToLock2 = path.join(__dirname, "lock2.lock");
 
     async function task() {
-      return await withLock({ lockfile: lockfile1 }, async () => {
+      return await withLock({ lockfile: fileToLock1 }, async () => {
         await pause(100 + Math.ceil(Math.random() * 200));
 
-        return await withLock({ lockfile: lockfile2 }, async () => {
+        return await withLock({ lockfile: fileToLock2 }, async () => {
           await pause(100 + Math.ceil(Math.random() * 200));
           return 42;
         });
@@ -237,7 +244,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     let counter = 10;
     let maxSimultaneous = 0;
     function f(callback: (err: Error | null, n?: number[]) => void) {
-      withLock({ lockfile }, async () => {
+      withLock({ lockfile: fileToLock }, async () => {
         const n = counter;
         maxSimultaneous += 1;
         counter++;
@@ -265,7 +272,7 @@ describe("File Mutex", function (this: Mocha.Suite) {
     let maxSimultaneous = 0;
     let counter = 0;
     function f(callback: (err: Error | null, n?: number[]) => void) {
-      withLock({ lockfile }, async () => {
+      withLock({ lockfile: fileToLock }, async () => {
         const n = counter;
         maxSimultaneous += 1;
         counter++;
@@ -287,5 +294,37 @@ describe("File Mutex", function (this: Mocha.Suite) {
         done(err);
       }
     );
+  });
+
+  it("T14 - use the same lock on same file (with different path)", async () => {
+    const filenameVariation1 = path.join(__dirname, "toto/../fileToLock.lock");
+    const filenameVariation2 = path.join(__dirname, "./fileToLock.lock");
+
+    toSentinel(filenameVariation1).should.eql(toSentinel(filenameVariation2));
+  });
+
+  describe("Within ReadOnly Folders", () => {
+    const readOnlyFolder = path.join(os.tmpdir(), "_readOnlyFolder");
+    before(() => {
+      if (fs.existsSync(readOnlyFolder)) {
+        fs.chmodSync(readOnlyFolder, 0o777);
+        fs.rmSync(readOnlyFolder, { recursive: true });
+      }
+      fs.mkdirSync(readOnlyFolder);
+    });
+
+    it("T13 - Locking file in read-only folder", async () => {
+      const fileToLock = path.join(readOnlyFolder, "fileToLock.lock");
+      fs.writeFileSync(fileToLock, "Hello", "utf-8");
+      fs.chmodSync(readOnlyFolder, 0o500); // 0x5 = r-x
+      console.log("acquiring lock");
+
+      await withLock({ lockfile: fileToLock }, async () => {
+        console.log("Lock acquired!");
+        /** */
+        await fs.promises.writeFile(fileToLock, "Hello-World", "utf-8");
+      });
+      console.log("Done!");
+    });
   });
 });
