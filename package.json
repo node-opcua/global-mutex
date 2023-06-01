@@ -1,6 +1,6 @@
 {
   "name": "@ster5/global-mutex",
-  "version": "1.3.0",
+  "version": "2.0.0",
   "description": "File based mutex",
   "main": "dist/source/index.js",
   "types": "dist/source/index.d.ts",
