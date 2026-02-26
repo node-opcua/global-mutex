@@ -98,7 +98,6 @@ describe("File Mutex", () => {
 
         expect(nbFunctionInExecution).toBe(0);
         expect(nbFunctionInExecutionMax).toBe(1);
-        verification.sort().should;
         expect(verification.sort()).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
         expect(duration).toBeGreaterThan(3 * retryInterval);
     }, 20000);
