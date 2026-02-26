@@ -47,6 +47,37 @@ interface ActiveLock {
 const activeLocks = new Map<string, ActiveLock>();
 
 // ---------------------------------------------------------------------------
+// Process-exit cleanup
+// ---------------------------------------------------------------------------
+
+let exitHandlerRegistered = false;
+
+/**
+ * Synchronously remove all lock directories held by THIS process.
+ * Called on process exit so that locks don't leak to disk.
+ */
+function cleanupLocksOnExit(): void {
+    for (const [lp, entry] of activeLocks) {
+        if (!entry.released) {
+            entry.released = true;
+            clearInterval(entry.timer);
+            try {
+                fs.rmSync(lp, { recursive: true, force: true });
+            } catch {
+                /* best-effort cleanup */
+            }
+        }
+    }
+    activeLocks.clear();
+}
+
+function ensureExitHandler(): void {
+    if (exitHandlerRegistered) return;
+    exitHandlerRegistered = true;
+    process.on("exit", cleanupLocksOnExit);
+}
+
+// ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
 
@@ -131,7 +162,8 @@ async function acquireLock(
         try {
             await fs.promises.mkdir(lp);
 
-            // — Lock acquired — start the refresh timer
+            // — Lock acquired — register exit cleanup + start refresh timer
+            ensureExitHandler();
             const timer = setInterval(async () => {
                 const entry = activeLocks.get(lp);
                 if (!entry || entry.released) return;
