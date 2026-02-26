@@ -19,13 +19,15 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
         randomize: true
     };
 
-    const _fs = lockOptions.fs || fs;
-
-    if (!_fs.existsSync(path.dirname(fileToLock))) {
+    try {
+        await fs.promises.access(path.dirname(fileToLock));
+    } catch {
         throw new Error(`Invalid lockfile: ${fileToLock}`);
     }
-    if (!_fs.existsSync(fileToLock)) {
-        _fs.writeFileSync(fileToLock, "");
+    try {
+        await fs.promises.writeFile(fileToLock, "", { flag: "wx" });
+    } catch (e: unknown) {
+        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
     }
 
     await lock(fileToLock, lockOptions);
