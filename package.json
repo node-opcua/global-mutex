@@ -37,10 +37,10 @@
     "license": "MIT",
     "repository": {
         "type": "git",
-        "url": "https://github.com/nicetomeetyou1208/global-mutex.git"
+        "url": "https://github.com/node-opcua/global-mutex.git"
     },
     "bugs": {
-        "url": "https://github.com/nicetomeetyou1208/global-mutex/issues"
+        "url": "https://github.com/node-opcua/global-mutex/issues"
     },
     "dependencies": {
         "proper-lockfile": "^4.1.2"
