@@ -38,7 +38,7 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
             await unlock(fileToLock, lockOptions);
         } catch (err) {
             // istanbul ignore next
-            console.log("Error in Unlock !!!", (err as Error).message);
+            console.warn("Error in Unlock !!!", (err as Error).message);
         }
     }
 }
