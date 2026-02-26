@@ -4,6 +4,7 @@
 [![NPM Version](https://img.shields.io/npm/v/@ster5/global-mutex.svg)](https://www.npmjs.com/package/@ster5/global-mutex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
+[![Dependency graph](https://img.shields.io/badge/dependency-graph-blue)](https://npmgraph.js.org/?q=@ster5/global-mutex#sizing=&color=moduleType&zoom=w)
 
 A file-based mutex for Node.js — coordinate access to shared
 resources across multiple processes.
