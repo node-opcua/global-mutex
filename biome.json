@@ -33,15 +33,8 @@
             "!**/node_modules",
             "!**/coverage",
             "!**/dist",
-            "!**/dist_cjs",
-            "!**/dist_esm",
-            "!**/dist-cjs",
-            "!**/dist-esm",
-            "!**/build",
-            "!**/certificates",
             "!package.json",
-            "!package-lock.json",
-            "!lerna.json"
+            "!package-lock.json"
         ]
     },
     "javascript": {
