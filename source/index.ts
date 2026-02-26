@@ -4,7 +4,7 @@ import { type CheckOptions, check, type LockOptions, lock, unlock } from "proper
 
 export const defaultStaleDuration = 2 * 60 * 1000; // two minutes
 
-interface MutexOption extends LockOptions {
+export interface MutexOption extends LockOptions {
     fileToLock: string;
 }
 
