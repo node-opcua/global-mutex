@@ -3,7 +3,7 @@
 [![CI](https://github.com/node-opcua/global-mutex/actions/workflows/ci.yml/badge.svg)](https://github.com/node-opcua/global-mutex/actions/workflows/ci.yml)
 [![NPM Version](https://img.shields.io/npm/v/@ster5/global-mutex.svg)](https://www.npmjs.com/package/@ster5/global-mutex)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Node.js](https://img.shields.io/badge/node-%3E%3D18-brightgreen.svg)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/node-%3E%3D20-brightgreen.svg)](https://nodejs.org/)
 
 A file-based mutex for Node.js — coordinate access to shared
 resources across multiple processes.
@@ -120,7 +120,7 @@ await withLock({ fileToLock: "/tmp/lock-a" }, async () => {
 
 ### Prerequisites
 
-- Node.js ≥ 18
+- Node.js ≥ 20
 
 ### Setup
 
@@ -143,7 +143,7 @@ npm install
 ### CI / CD
 
 - **CI** — runs on every push to `master` and on pull requests.
-  Tests against Node.js 18, 20, 22, and 24 on Ubuntu, macOS, and
+  Tests against Node.js 20, 22, and 24 on Ubuntu, macOS, and
   Windows.
 - **Publish** — triggered by pushing a `v*` tag or via manual
   workflow dispatch. Builds, tests, and publishes to
