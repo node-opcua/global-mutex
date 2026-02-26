@@ -359,4 +359,87 @@ describe("File Mutex", () => {
             console.log("Done!");
         });
     });
+
+    describe("Process-exit lock cleanup", () => {
+        const exitLockFile = path.join(os.tmpdir(), "exit-cleanup-test.txt");
+        const exitLockDir = `${exitLockFile}.lock`;
+        const markerFile = path.join(os.tmpdir(), "exit-cleanup-marker.txt");
+        const projectDir = path.resolve(__dirname, "..");
+
+        beforeAll(() => {
+            cleanupStaleLocks(exitLockFile);
+            // Build to ensure dist/ matches current source
+            const { execSync } = require("node:child_process") as typeof import("node:child_process");
+            execSync("npm run build", { cwd: projectDir, stdio: "pipe" });
+        });
+
+        afterAll(() => {
+            cleanupStaleLocks(exitLockFile);
+            try {
+                fs.unlinkSync(markerFile);
+            } catch {}
+        });
+
+        function runChildScript(scriptBody: string) {
+            const code = [
+                `const fs = require("node:fs");`,
+                `const { withLock } = require(".");`,
+                `const fileToLock = ${JSON.stringify(exitLockFile)};`,
+                `const markerFile = ${JSON.stringify(markerFile)};`,
+                `(async () => {`,
+                scriptBody,
+                `})();`
+            ].join("\n");
+
+            // Remove marker from previous run
+            try {
+                fs.unlinkSync(markerFile);
+            } catch {}
+
+            const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
+            return spawnSync(process.execPath, ["-e", code], {
+                cwd: projectDir,
+                timeout: 10000,
+                stdio: "pipe"
+            });
+        }
+
+        it("T14 - should clean up lock on process.exit()", () => {
+            cleanupStaleLocks(exitLockFile);
+
+            runChildScript(`
+                await withLock({ fileToLock }, async () => {
+                    // Prove we acquired the lock
+                    fs.writeFileSync(markerFile, "lock-acquired");
+                    process.exit(0);
+                });
+            `);
+
+            // 1) Verify the lock WAS acquired (child ran successfully)
+            expect(fs.existsSync(markerFile)).toBe(true);
+            expect(fs.readFileSync(markerFile, "utf-8")).toBe("lock-acquired");
+
+            // 2) Verify the lock dir was cleaned up by the exit handler
+            expect(fs.existsSync(exitLockDir)).toBe(false);
+        });
+
+        it("T15 - should clean up lock on uncaught exception", () => {
+            cleanupStaleLocks(exitLockFile);
+
+            runChildScript(`
+                await withLock({ fileToLock }, async () => {
+                    // Prove we acquired the lock
+                    fs.writeFileSync(markerFile, "lock-acquired");
+                    throw new Error("crash");
+                });
+            `);
+
+            // 1) Verify the lock WAS acquired
+            expect(fs.existsSync(markerFile)).toBe(true);
+            expect(fs.readFileSync(markerFile, "utf-8")).toBe("lock-acquired");
+
+            // 2) Verify the lock dir was cleaned up
+            expect(fs.existsSync(exitLockDir)).toBe(false);
+        });
+    });
 });
