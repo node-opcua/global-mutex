@@ -1,18 +1,13 @@
-# Official framework image. Look for the different tagged releases at:
-# https://hub.docker.com/r/library/node/tags/
+# Official framework image
 image: node:latest
 
-
-# This folder is cached between builds
-# http://docs.gitlab.com/ee/ci/yaml/README.html#cache
+# Cache node_modules between builds
 cache:
   paths:
     - node_modules/
 
-test_async:
+test:
   script:
     - npm install
     - npm run build
-    - npm run test
-
-
+    - npm test

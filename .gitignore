@@ -1,6 +1,8 @@
 node_modules/
 dist/
 .nyc_output/
+coverage/
 *.tsbuildinfo
 test/*.txt
 test/*.lock
+commit_message.txt
