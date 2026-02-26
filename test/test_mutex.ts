@@ -164,7 +164,7 @@ describe("File Mutex", () => {
 
     it.skip("T6- evaluation fs.unlink when file is opened", async () => {
         try {
-            resetLock(fileToLock);
+            cleanupStaleLocks(fileToLock);
         } catch (err) {
             throw err;
         }

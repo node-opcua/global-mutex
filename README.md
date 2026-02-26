@@ -26,8 +26,9 @@ support.
   `withLock` scoped-lock pattern.
 - **Dual ESM / CJS** — ships both ES module (`.mjs`) and CommonJS
   (`.js`) builds with full TypeScript declarations.
-- **Zero runtime dependencies** — only
-  [proper-lockfile](https://www.npmjs.com/package/proper-lockfile).
+- **Zero runtime dependencies** — pure Node.js
+  implementation using `mkdir` as an atomic lock
+  primitive.
 
 ## Installation
 

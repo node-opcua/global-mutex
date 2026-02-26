@@ -45,14 +45,10 @@
     "bugs": {
         "url": "https://github.com/node-opcua/global-mutex/issues"
     },
-    "dependencies": {
-        "proper-lockfile": "^4.1.2"
-    },
     "devDependencies": {
         "@biomejs/biome": "^2.4.4",
         "@types/async": "^3.2.25",
         "@types/node": "^25.3.1",
-        "@types/proper-lockfile": "^4.1.4",
         "async": "^3.2.6",
         "husky": "^9.1.7",
         "lint-staged": "^16.2.7",
