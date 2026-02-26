@@ -9,11 +9,17 @@ interface MutexOption extends LockOptions {
 }
 
 export async function withLock<T>(options: MutexOption, action: () => Promise<T>): Promise<T> {
-    options.stale = options.stale || defaultStaleDuration;
+    const { fileToLock, ...lockOptions } = { ...options };
 
-    const { fileToLock } = options;
+    lockOptions.stale = lockOptions.stale || defaultStaleDuration;
+    lockOptions.retries = lockOptions.retries ?? {
+        forever: true,
+        minTimeout: 100,
+        maxTimeout: 2000,
+        randomize: true
+    };
 
-    const _fs = options.fs || fs;
+    const _fs = lockOptions.fs || fs;
 
     if (!_fs.existsSync(path.dirname(fileToLock))) {
         throw new Error(`Invalid lockfile: ${fileToLock}`);
@@ -22,16 +28,12 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
         _fs.writeFileSync(fileToLock, "");
     }
 
-    options.stale = options.stale || defaultStaleDuration;
-    if (options.retries === undefined) {
-        options.retries = { forever: true, minTimeout: 100, maxTimeout: 2000, randomize: true };
-    }
-    await lock(fileToLock, options);
+    await lock(fileToLock, lockOptions);
     try {
         return await action();
     } finally {
         try {
-            await unlock(fileToLock, options);
+            await unlock(fileToLock, lockOptions);
         } catch (err) {
             // istanbul ignore next
             console.log("Error in Unlock !!!", (err as Error).message);
