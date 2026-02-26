@@ -1,8 +1,5 @@
 import { defineConfig } from "tsup";
 
-const pkg = require("./package.json");
-const externalDeps = Object.keys(pkg.dependencies || {});
-
 export default defineConfig({
     entry: { index: "source/index.ts" },
     outDir: "dist",
@@ -11,6 +8,7 @@ export default defineConfig({
     sourcemap: true,
     clean: true,
     target: "es2022",
+    minify: false,
     shims: true,
-    external: externalDeps
+    external: ["proper-lockfile"]
 });
