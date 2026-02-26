@@ -2,14 +2,22 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import * as async from "async";
-import { beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { isLocked, withLock } from "../source";
 
 async function pause(duration: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, duration));
 }
-function resetLock(_fileToLock: string) {}
+
+function cleanupStaleLocks(...files: string[]) {
+    for (const f of files) {
+        const lockDir = `${f}.lock`;
+        if (fs.existsSync(lockDir)) {
+            fs.rmSync(lockDir, { recursive: true, force: true });
+        }
+    }
+}
 
 function getInternalLockFile(fileToLock: string) {
     return `${fileToLock}.lock`;
@@ -23,8 +31,15 @@ function simulateLockFile(fileToLock: string) {
 
 describe("File Mutex", () => {
     const fileToLock = path.join(__dirname, "fileToLock.txt");
+    const fileToLock1 = path.join(__dirname, "fileToLock1.txt");
+    const fileToLock2 = path.join(__dirname, "fileToLock2.txt");
+
     beforeAll(() => {
-        resetLock(fileToLock);
+        cleanupStaleLocks(fileToLock, fileToLock1, fileToLock2);
+    });
+
+    afterAll(() => {
+        cleanupStaleLocks(fileToLock, fileToLock1, fileToLock2);
     });
 
     it("T1- should transmit return value", async () => {
