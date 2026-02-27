@@ -180,7 +180,26 @@ async function acquireLock(
             activeLocks.set(lp, { timer, released: false });
             return;
         } catch (err: unknown) {
-            if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+            const code = (err as NodeJS.ErrnoException).code;
+
+            if (code === "EEXIST") {
+                // Normal contention — lock dir already exists
+            } else if (code === "EPERM") {
+                // On Windows, mkdir can throw EPERM when the lock
+                // path already exists as a regular file (e.g.
+                // leftover from a different locking library).
+                // Disambiguate from genuine permission issues by
+                // checking whether something actually exists at lp.
+                try {
+                    await fs.promises.stat(lp);
+                    // Something exists → treat like EEXIST below
+                } catch {
+                    // Nothing at lp → real permission problem
+                    throw err;
+                }
+            } else {
+                throw err;
+            }
 
             // Lock directory exists — check staleness
             if (await isStale(lp, stale)) {

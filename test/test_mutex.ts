@@ -462,6 +462,153 @@ describe("File Mutex", () => {
         }, 20000);
     });
 
+    describe("EPERM regression — file at lock path", () => {
+        const epermLockFile = path.join(__dirname, "epermTest.txt");
+        const epermLockDir = `${epermLockFile}.lock`;
+
+        beforeAll(() => {
+            cleanupStaleLocks(epermLockFile);
+            try {
+                fs.unlinkSync(epermLockFile);
+            } catch {}
+        });
+
+        afterAll(() => {
+            cleanupStaleLocks(epermLockFile);
+            try {
+                fs.unlinkSync(epermLockFile);
+            } catch {}
+        });
+
+        it("T18 - EPERM with existing artifact at lock path → treated as contention", async () => {
+            // Scenario: a regular file exists at the .lock path (left
+            // by a different locking library).  On Windows, mkdir
+            // throws EPERM (not EEXIST) when the target is a file.
+            //
+            // The fix checks stat(lp) after EPERM: if something is
+            // there, it falls through to the staleness/retry logic.
+            //
+            // This test:
+            //   1. Creates a real file at the lock path
+            //   2. Monkey-patches mkdir to throw EPERM on the 1st call
+            //   3. Verifies withLock recovers via retry
+
+            // Ensure a file exists at the lock path for stat() to find
+            fs.writeFileSync(epermLockDir, "leftover", "utf-8");
+            // Backdate it so it's stale
+            const past = new Date(Date.now() - 10_000);
+            fs.utimesSync(epermLockDir, past, past);
+
+            const originalMkdir = fs.promises.mkdir;
+            let mkdirCalls = 0;
+
+            fs.promises.mkdir = (async (...args: Parameters<typeof originalMkdir>) => {
+                mkdirCalls++;
+                if (mkdirCalls === 1) {
+                    const e = new Error(`EPERM: operation not permitted, mkdir '${args[0]}'`) as NodeJS.ErrnoException;
+                    e.code = "EPERM";
+                    throw e;
+                }
+                return originalMkdir.apply(fs.promises, args);
+            }) as typeof originalMkdir;
+
+            try {
+                const result = await withLock(
+                    {
+                        fileToLock: epermLockFile,
+                        stale: 500,
+                        retries: { retries: 5, minTimeout: 100 }
+                    },
+                    async () => {
+                        await pause(10);
+                        return 42;
+                    }
+                );
+
+                expect(result).toBe(42);
+                expect(mkdirCalls).toBeGreaterThanOrEqual(2);
+            } finally {
+                fs.promises.mkdir = originalMkdir;
+                try {
+                    fs.rmSync(epermLockDir, { recursive: true, force: true });
+                } catch {}
+            }
+        }, 15000);
+
+        it("T19 - non-EEXIST/non-EPERM errors (e.g. EACCES) must propagate", async () => {
+            const originalMkdir = fs.promises.mkdir;
+
+            fs.promises.mkdir = (async (...args: Parameters<typeof originalMkdir>) => {
+                const e = new Error(`EACCES: permission denied, mkdir '${args[0]}'`) as NodeJS.ErrnoException;
+                e.code = "EACCES";
+                throw e;
+            }) as typeof originalMkdir;
+
+            try {
+                let caught: Error | null = null;
+                try {
+                    await withLock(
+                        {
+                            fileToLock: epermLockFile,
+                            stale: 500,
+                            retries: { retries: 1, minTimeout: 100 }
+                        },
+                        async () => 42
+                    );
+                } catch (e) {
+                    caught = e as Error;
+                }
+
+                expect(caught).not.toBeNull();
+                expect((caught as Error).message).toMatch(/EACCES/);
+            } finally {
+                fs.promises.mkdir = originalMkdir;
+            }
+        });
+
+        it("T20 - EPERM with nothing at lock path → rethrown (genuine permission issue)", async () => {
+            // If mkdir throws EPERM but nothing exists at the lock
+            // path, it's a real permission problem (bad ACL, etc.).
+            // withLock must NOT silently swallow it.
+
+            // Ensure the lock path is clean
+            try {
+                fs.rmSync(epermLockDir, { recursive: true, force: true });
+            } catch {}
+
+            const originalMkdir = fs.promises.mkdir;
+
+            fs.promises.mkdir = (async (...args: Parameters<typeof originalMkdir>) => {
+                const e = new Error(`EPERM: operation not permitted, mkdir '${args[0]}'`) as NodeJS.ErrnoException;
+                e.code = "EPERM";
+                throw e;
+            }) as typeof originalMkdir;
+
+            try {
+                let caught: Error | null = null;
+                try {
+                    await withLock(
+                        {
+                            fileToLock: epermLockFile,
+                            stale: 500,
+                            retries: { retries: 3, minTimeout: 100 }
+                        },
+                        async () => 42
+                    );
+                } catch (e) {
+                    caught = e as Error;
+                }
+
+                // Must get the original EPERM, NOT "Lock file is
+                // already being held"
+                expect(caught).not.toBeNull();
+                expect((caught as Error).message).toMatch(/EPERM/);
+            } finally {
+                fs.promises.mkdir = originalMkdir;
+            }
+        });
+    });
+
     describe("Process-exit lock cleanup", () => {
         const exitLockFile = path.join(os.tmpdir(), "exit-cleanup-test.txt");
         const exitLockDir = `${exitLockFile}.lock`;
