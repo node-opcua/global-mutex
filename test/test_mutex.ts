@@ -360,6 +360,108 @@ describe("File Mutex", () => {
         });
     });
 
+    describe("Interval lifecycle", () => {
+        const intervalLockFile = path.join(__dirname, "intervalTest.txt");
+
+        beforeAll(() => {
+            cleanupStaleLocks(intervalLockFile);
+        });
+        afterAll(() => {
+            cleanupStaleLocks(intervalLockFile);
+        });
+
+        function createIntervalTracker() {
+            const originalSetInterval = globalThis.setInterval;
+            const originalClearInterval = globalThis.clearInterval;
+
+            const active = new Set<NodeJS.Timeout>();
+            let totalSet = 0;
+            let totalCleared = 0;
+
+            globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+                const id = originalSetInterval(...args);
+                active.add(id);
+                totalSet++;
+                return id;
+            }) as typeof setInterval;
+
+            globalThis.clearInterval = ((id: NodeJS.Timeout) => {
+                if (active.has(id)) {
+                    active.delete(id);
+                    totalCleared++;
+                }
+                return originalClearInterval(id);
+            }) as typeof clearInterval;
+
+            return {
+                get leaking() {
+                    return active.size;
+                },
+                get totalSet() {
+                    return totalSet;
+                },
+                get totalCleared() {
+                    return totalCleared;
+                },
+                restore() {
+                    // Clean up any remaining intervals
+                    for (const id of active) {
+                        originalClearInterval(id);
+                    }
+                    globalThis.setInterval = originalSetInterval;
+                    globalThis.clearInterval = originalClearInterval;
+                }
+            };
+        }
+
+        it("T16 - single withLock must clear its interval", async () => {
+            const tracker = createIntervalTracker();
+            try {
+                await withLock({ fileToLock: intervalLockFile }, async () => {
+                    await pause(10);
+                    return 1;
+                });
+
+                expect(tracker.totalSet).toBe(1);
+                expect(tracker.totalCleared).toBe(1);
+                expect(tracker.leaking).toBe(0);
+            } finally {
+                tracker.restore();
+            }
+        });
+
+        it("T17 - parallel nested locks must clear all intervals", async () => {
+            const fileToLock1 = path.join(__dirname, "intervalTest1.txt");
+            const fileToLock2 = path.join(__dirname, "intervalTest2.txt");
+
+            cleanupStaleLocks(fileToLock1, fileToLock2);
+
+            const tracker = createIntervalTracker();
+            try {
+                async function task() {
+                    return await withLock({ fileToLock: fileToLock1 }, async () => {
+                        await pause(10 + Math.ceil(Math.random() * 20));
+                        return await withLock({ fileToLock: fileToLock2 }, async () => {
+                            await pause(10);
+                            return 42;
+                        });
+                    });
+                }
+
+                const results = await Promise.all([task(), task(), task(), task(), task(), task()]);
+                expect(results).toEqual([42, 42, 42, 42, 42, 42]);
+
+                // 6 tasks × 2 locks each = 12 intervals
+                expect(tracker.totalSet).toBe(12);
+                expect(tracker.totalCleared).toBe(12);
+                expect(tracker.leaking).toBe(0);
+            } finally {
+                tracker.restore();
+                cleanupStaleLocks(fileToLock1, fileToLock2);
+            }
+        }, 20000);
+    });
+
     describe("Process-exit lock cleanup", () => {
         const exitLockFile = path.join(os.tmpdir(), "exit-cleanup-test.txt");
         const exitLockDir = `${exitLockFile}.lock`;
@@ -368,9 +470,6 @@ describe("File Mutex", () => {
 
         beforeAll(() => {
             cleanupStaleLocks(exitLockFile);
-            // Build to ensure dist/ matches current source
-            const { execSync } = require("node:child_process") as typeof import("node:child_process");
-            execSync("npm run build", { cwd: projectDir, stdio: "pipe" });
         });
 
         afterAll(() => {
