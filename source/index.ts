@@ -45,6 +45,7 @@ interface ActiveLock {
 }
 
 const activeLocks = new Map<string, ActiveLock>();
+const pendingLocks = new Set<Promise<unknown>>();
 
 // ---------------------------------------------------------------------------
 // Process-exit cleanup
@@ -253,33 +254,48 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
     const retry = normalizeRetry(retries);
     const updateInterval = update ?? Math.floor(stale / 2);
 
-    // Validate parent directory
-    try {
-        await fs.promises.access(path.dirname(fileToLock));
-    } catch {
-        throw new Error(`Invalid lockfile: ${fileToLock}`);
-    }
-
-    // Ensure the lock-target file exists
-    try {
-        await fs.promises.writeFile(fileToLock, "", { flag: "wx" });
-    } catch (e: unknown) {
-        if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
-    }
-
-    const lp = lockPath(fileToLock);
-
-    await acquireLock(lp, stale, retry, updateInterval, onCompromised);
-    try {
-        return await action();
-    } finally {
+    // The entire lock lifecycle is wrapped in an IIFE so the promise
+    // is created synchronously and added to pendingLocks BEFORE any
+    // async work begins.  This ensures fire-and-forget callers can
+    // later call drainPendingLocks() and find all in-flight operations.
+    const lockPromise = (async () => {
+        // Validate parent directory
         try {
-            await releaseLock(lp);
-        } catch (err) {
-            /* v8 ignore next */
-            console.warn("Error in Unlock !!!", (err as Error).message);
+            await fs.promises.access(path.dirname(fileToLock));
+        } catch {
+            throw new Error(`Invalid lockfile: ${fileToLock}`);
         }
-    }
+
+        // Ensure the lock-target file exists
+        try {
+            await fs.promises.writeFile(fileToLock, "", { flag: "wx" });
+        } catch (e: unknown) {
+            if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
+        }
+
+        const lp = lockPath(fileToLock);
+
+        await acquireLock(lp, stale, retry, updateInterval, onCompromised);
+        try {
+            return await action();
+        } finally {
+            try {
+                await releaseLock(lp);
+            } catch (err) {
+                /* v8 ignore next */
+                console.warn("Error in Unlock !!!", (err as Error).message);
+            }
+        }
+    })();
+
+    // Register synchronously — before the first await above runs.
+    // Use .then(fn, fn) instead of .finally(fn) to avoid creating
+    // a derived promise that propagates rejections as unhandled.
+    pendingLocks.add(lockPromise);
+    const cleanup = () => pendingLocks.delete(lockPromise);
+    lockPromise.then(cleanup, cleanup);
+
+    return lockPromise;
 }
 
 /**
@@ -292,4 +308,15 @@ export async function isLocked(fileToLock: string): Promise<boolean> {
     } catch {
         return false;
     }
+}
+
+/**
+ * Wait for all in-flight `withLock` operations to complete.
+ *
+ * Call this during graceful shutdown to ensure all lock intervals
+ * are properly cleared before the process exits or a leak detector
+ * runs. Resolves once every pending `withLock` promise has settled.
+ */
+export async function drainPendingLocks(): Promise<void> {
+    await Promise.allSettled([...pendingLocks]);
 }

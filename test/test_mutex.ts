@@ -4,7 +4,7 @@ import * as path from "node:path";
 import * as async from "async";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { isLocked, withLock } from "../source";
+import { drainPendingLocks, isLocked, withLock } from "../source";
 
 async function pause(duration: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, duration));
@@ -462,6 +462,87 @@ describe("File Mutex", () => {
         }, 20000);
     });
 
+    describe("drainPendingLocks", () => {
+        const drainLockFile = path.join(__dirname, "drainTest.txt");
+
+        beforeAll(() => {
+            cleanupStaleLocks(drainLockFile);
+        });
+        afterAll(() => {
+            cleanupStaleLocks(drainLockFile);
+        });
+
+        it("T21 - should wait for fire-and-forget withLock calls to complete", async () => {
+            const results: number[] = [];
+
+            // Launch 5 fire-and-forget withLock calls (not awaited)
+            for (let i = 0; i < 5; i++) {
+                const n = i;
+                // deliberately NOT awaited — simulates CertificateManager.trustCertificate
+                withLock({ fileToLock: drainLockFile }, async () => {
+                    await pause(20);
+                    results.push(n);
+                });
+            }
+
+            // Yield to let the first lock acquire
+            await pause(1);
+
+            // drainPendingLocks should wait for all of them
+            await drainPendingLocks();
+
+            expect(results.length).toBe(5);
+            expect(results.sort()).toEqual([0, 1, 2, 3, 4]);
+        }, 20000);
+
+        it("T22 - drainPendingLocks ensures all intervals are cleared", async () => {
+            const originalSetInterval = globalThis.setInterval;
+            const originalClearInterval = globalThis.clearInterval;
+            const active = new Set<NodeJS.Timeout>();
+
+            globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+                const id = originalSetInterval(...args);
+                active.add(id);
+                return id;
+            }) as typeof setInterval;
+
+            globalThis.clearInterval = ((id: NodeJS.Timeout) => {
+                active.delete(id);
+                return originalClearInterval(id);
+            }) as typeof clearInterval;
+
+            try {
+                // Launch fire-and-forget locks
+                for (let i = 0; i < 3; i++) {
+                    withLock({ fileToLock: drainLockFile }, async () => {
+                        await pause(10);
+                    });
+                }
+
+                // Intervals may be active
+                // Drain waits for all locks to release
+                await drainPendingLocks();
+
+                // After drain, ALL intervals must be cleared
+                expect(active.size).toBe(0);
+            } finally {
+                // safety cleanup
+                for (const id of active) {
+                    originalClearInterval(id);
+                }
+                globalThis.setInterval = originalSetInterval;
+                globalThis.clearInterval = originalClearInterval;
+            }
+        }, 20000);
+
+        it("T23 - drainPendingLocks resolves immediately when no locks pending", async () => {
+            const start = Date.now();
+            await drainPendingLocks();
+            const elapsed = Date.now() - start;
+            expect(elapsed).toBeLessThan(50);
+        });
+    });
+
     describe("EPERM regression — file at lock path", () => {
         const epermLockFile = path.join(__dirname, "epermTest.txt");
         const epermLockDir = `${epermLockFile}.lock`;
@@ -473,7 +554,8 @@ describe("File Mutex", () => {
             } catch {}
         });
 
-        afterAll(() => {
+        afterAll(async () => {
+            await drainPendingLocks();
             cleanupStaleLocks(epermLockFile);
             try {
                 fs.unlinkSync(epermLockFile);
@@ -529,9 +611,7 @@ describe("File Mutex", () => {
                 expect(mkdirCalls).toBeGreaterThanOrEqual(2);
             } finally {
                 fs.promises.mkdir = originalMkdir;
-                try {
-                    fs.rmSync(epermLockDir, { recursive: true, force: true });
-                } catch {}
+                cleanupStaleLocks(epermLockFile);
             }
         }, 15000);
 
@@ -571,10 +651,7 @@ describe("File Mutex", () => {
             // path, it's a real permission problem (bad ACL, etc.).
             // withLock must NOT silently swallow it.
 
-            // Ensure the lock path is clean
-            try {
-                fs.rmSync(epermLockDir, { recursive: true, force: true });
-            } catch {}
+            cleanupStaleLocks(epermLockFile);
 
             const originalMkdir = fs.promises.mkdir;
 
@@ -621,9 +698,7 @@ describe("File Mutex", () => {
 
         afterAll(() => {
             cleanupStaleLocks(exitLockFile);
-            try {
-                fs.unlinkSync(markerFile);
-            } catch {}
+            fs.rmSync(markerFile, { force: true });
         });
 
         function runChildScript(scriptBody: string) {
@@ -638,9 +713,7 @@ describe("File Mutex", () => {
             ].join("\n");
 
             // Remove marker from previous run
-            try {
-                fs.unlinkSync(markerFile);
-            } catch {}
+            fs.rmSync(markerFile, { force: true });
 
             const { spawnSync } = require("node:child_process") as typeof import("node:child_process");
             return spawnSync(process.execPath, ["-e", code], {
