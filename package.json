@@ -1,6 +1,6 @@
 {
     "name": "@ster5/global-mutex",
-    "version": "3.1.1",
+    "version": "3.1.2",
     "description": "File based mutex",
     "type": "commonjs",
     "engines": {
