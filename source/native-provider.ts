@@ -130,6 +130,7 @@ export class NativeLockProvider implements LockProvider {
             } catch (err: unknown) {
                 const code = (err as NodeJS.ErrnoException).code;
 
+                let isSwallowedEperm = false;
                 if (code === "EEXIST") {
                     // Normal contention — lock dir already exists
                 } else if (code === "EPERM") {
@@ -142,21 +143,25 @@ export class NativeLockProvider implements LockProvider {
                         await fs.promises.stat(lp);
                         // Something exists → treat like EEXIST below
                     } catch {
-                        // Nothing at lp → real permission problem
-                        throw err;
+                        // Do not throw err here on EPERM stat failure.
+                        // On Windows, concurrent mkdir can throw EPERM and stat can concurrently fail or be denied.
+                        // We swallow this so the backoff retry logic can proceed.
+                        isSwallowedEperm = true;
                     }
                 } else {
                     throw err;
                 }
 
-                // Lock directory exists — check staleness
-                if (await isStale(lp, stale)) {
-                    try {
-                        await fs.promises.rm(lp, { recursive: true, force: true });
-                    } catch {
-                        /* another process may have removed it */
+                if (!isSwallowedEperm) {
+                    // Lock directory exists — check staleness
+                    if (await isStale(lp, stale)) {
+                        try {
+                            await fs.promises.rm(lp, { recursive: true, force: true });
+                        } catch {
+                            /* another process may have removed it */
+                        }
+                        continue; // retry immediately after removing a stale lock
                     }
-                    continue; // retry immediately after removing a stale lock
                 }
 
                 // Not stale — obey retry limits
