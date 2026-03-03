@@ -1,0 +1,49 @@
+export interface RetryOptions {
+    /** Maximum number of retries (default: 10 when object, 0 when number). */
+    retries?: number;
+    /** Retry forever, ignoring `retries` count. */
+    forever?: boolean;
+    /** Minimum retry delay in ms (default: 1000). */
+    minTimeout?: number;
+    /** Maximum retry delay in ms (default: Infinity). */
+    maxTimeout?: number;
+    /** Randomize (jitter) the delay (default: false). */
+    randomize?: boolean;
+    /** Abort retries after this many ms total (default: Infinity). */
+    maxRetryTime?: number;
+}
+
+export interface MutexOption {
+    /** Path to the file to lock. Created automatically if absent. */
+    fileToLock: string;
+    /** Duration in ms after which a lock is considered stale. */
+    stale?: number;
+    /** Interval in ms between lock-refresh touches (default: stale / 2). */
+    update?: number;
+    /** Retry configuration: a count, a full options object, or undefined for "forever". */
+    retries?: number | RetryOptions;
+    /** Called if the lock is compromised (removed externally) while held. */
+    onCompromised?: (err: Error) => void;
+}
+
+export interface LockProvider {
+    /**
+     * Acquire a lock.
+     * @param options Mutex options.
+     * @returns A promise that resolves when the lock is acquired, and returns a function to release the lock.
+     */
+    acquire(options: MutexOption): Promise<() => Promise<void>>;
+
+    /**
+     * Check if a file is explicitly locked by *any* process in the context of this provider.
+     * @param fileToLock File path.
+     * @returns A promise that resolves to a boolean indicating lock status.
+     */
+    isLocked(fileToLock: string): Promise<boolean>;
+
+    /**
+     * Drain pending locks belonging to this process on shutdown or cleanup.
+     * @returns Promise
+     */
+    drainPendingLocks(): Promise<void>;
+}

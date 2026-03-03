@@ -30,5 +30,8 @@ jobs:
       - name: Build
         run: npm run build
 
-      - name: Test
-        run: npm test
+      - name: Test (Without Optional Peer Dependency)
+        run: npm run uninstall-proper-lockfile && npm test
+
+      - name: Test (With Optional Peer Dependency)
+        run: npm run install-proper-lockfile && npm test

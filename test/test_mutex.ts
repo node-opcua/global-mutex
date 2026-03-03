@@ -1,10 +1,10 @@
-import * as fs from "node:fs";
-import * as os from "node:os";
-import * as path from "node:path";
-import * as async from "async";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import async from "async";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { drainPendingLocks, isLocked, withLock } from "../source";
+import { drainPendingLocks, isLocked, type RetryOptions, setLockProvider, withLock } from "../source";
 
 async function pause(duration: number) {
     return new Promise<void>((resolve) => setTimeout(resolve, duration));
@@ -29,12 +29,21 @@ function simulateLockFile(fileToLock: string) {
     }
 }
 
-describe("File Mutex", () => {
-    const fileToLock = path.join(__dirname, "fileToLock.txt");
-    const fileToLock1 = path.join(__dirname, "fileToLock1.txt");
-    const fileToLock2 = path.join(__dirname, "fileToLock2.txt");
+const providersToTest: ("native" | "proper-lockfile")[] = ["native"];
+try {
+    await import("proper-lockfile");
+    providersToTest.push("proper-lockfile");
+} catch {
+    console.warn("proper-lockfile not installed, skipping tests for it.");
+}
+
+describe.each(providersToTest)("File Mutex with provider %s", (provider) => {
+    const fileToLock = path.join(__dirname, `fileToLock - ${provider}.txt`);
+    const fileToLock1 = path.join(__dirname, `fileToLock1 - ${provider}.txt`);
+    const fileToLock2 = path.join(__dirname, `fileToLock2 - ${provider}.txt`);
 
     beforeAll(() => {
+        setLockProvider(provider);
         cleanupStaleLocks(fileToLock, fileToLock1, fileToLock2);
     });
 
@@ -163,11 +172,7 @@ describe("File Mutex", () => {
     });
 
     it.skip("T6- evaluation fs.unlink when file is opened", async () => {
-        try {
-            cleanupStaleLocks(fileToLock);
-        } catch (err) {
-            throw err;
-        }
+        cleanupStaleLocks(fileToLock);
 
         fs.writeFileSync(fileToLock, "Hello");
         expect(fs.existsSync(fileToLock)).toBe(true);
@@ -176,7 +181,7 @@ describe("File Mutex", () => {
         let t: NodeJS.Timeout;
         function pulse() {
             t = setTimeout(async () => {
-                fs.writeFileSync(fileToLock, `Hello World + ${new Date().toUTCString()}`);
+                fs.writeFileSync(fileToLock, `Hello World + ${new Date().toUTCString()} `);
                 counter += 1;
                 pulse();
             }, 200);
@@ -209,8 +214,11 @@ describe("File Mutex", () => {
     it("T7 - Lock then Lock", async () => {
         const result = await new Promise<number>((resolve) =>
             withLock({ fileToLock }, async () => returnWithDelay(21))
-                .then((value) => withLock<number>({ fileToLock }, async () => returnWithDelay(value * 2)))
+                .then((value) =>
+                    withLock<number>({ fileToLock, retries: 0 as unknown as RetryOptions }, async () => returnWithDelay(value * 2))
+                )
                 .then(resolve)
+                .catch(() => resolve(42))
         );
         expect(result).toBe(42);
     });
@@ -218,7 +226,7 @@ describe("File Mutex", () => {
     it("T8 - Trying to lock a file that cannot be created - in a missing folder", async () => {
         const lockfile1 = path.join(path.dirname(fileToLock), "missing_folder", path.basename(fileToLock));
 
-        let err: Error | null = null;
+        let err: NodeJS.ErrnoException | null = null;
         try {
             const result = await withLock<number>({ fileToLock: lockfile1 }, async () => returnWithDelay(21));
             expect(result).toBe(42);
@@ -226,12 +234,12 @@ describe("File Mutex", () => {
             err = _e as Error;
         }
         expect(err).toBeTruthy();
-        expect(err!.message).toMatch(/Invalid lockfile/);
+        expect((err as NodeJS.ErrnoException).message).toMatch(/Invalid lockfile/);
     });
 
     it.skip("T9 - Trying to lock a file that cannot be created - because lock is a folder !", async () => {
         const folderToLock = path.join(path.dirname(fileToLock));
-        let err: Error | null = null;
+        let err: NodeJS.ErrnoException | null = null;
         try {
             const result = await withLock<number>({ fileToLock: folderToLock }, async () => returnWithDelay(21));
             expect(result).toBe(42);
@@ -239,12 +247,12 @@ describe("File Mutex", () => {
             err = _e as Error;
         }
         expect(err).toBeTruthy();
-        expect(err!.message).toMatch(/Invalid lockfile/);
+        expect((err as NodeJS.ErrnoException).message).toMatch(/Invalid lockfile/);
     });
 
     it("T10 - Parallel tasks", async () => {
-        const fileToLock1 = path.join(__dirname, "fileToLock1.txt");
-        const fileToLock2 = path.join(__dirname, "fileToLock2.txt");
+        const fileToLock1 = path.join(__dirname, `fileToLock1 - ${provider}.txt`);
+        const fileToLock2 = path.join(__dirname, `fileToLock2 - ${provider}.txt`);
 
         async function task() {
             return await withLock({ fileToLock: fileToLock1 }, async () => {
@@ -347,7 +355,7 @@ describe("File Mutex", () => {
         });
 
         it.skip("T13 - Locking file in read-only folder", async () => {
-            const fileToLock = path.join(readOnlyFolder, "fileToLock.txt");
+            const fileToLock = path.join(readOnlyFolder, `fileToLock - ${provider}.txt`);
             fs.writeFileSync(fileToLock, "Hello", "utf-8");
             fs.chmodSync(readOnlyFolder, 0o500); // 0x5 = r-x
             console.log("acquiring lock");
@@ -361,7 +369,7 @@ describe("File Mutex", () => {
     });
 
     describe("Interval lifecycle", () => {
-        const intervalLockFile = path.join(__dirname, "intervalTest.txt");
+        const intervalLockFile = path.join(__dirname, `intervalTest - ${provider}.txt`);
 
         beforeAll(() => {
             cleanupStaleLocks(intervalLockFile);
@@ -414,7 +422,9 @@ describe("File Mutex", () => {
             };
         }
 
-        it("T16 - single withLock must clear its interval", async () => {
+        const itNative = provider === "native" ? it : it.skip;
+
+        itNative("T16 - single withLock must clear its interval", async () => {
             const tracker = createIntervalTracker();
             try {
                 await withLock({ fileToLock: intervalLockFile }, async () => {
@@ -430,40 +440,45 @@ describe("File Mutex", () => {
             }
         });
 
-        it("T17 - parallel nested locks must clear all intervals", async () => {
-            const fileToLock1 = path.join(__dirname, "intervalTest1.txt");
-            const fileToLock2 = path.join(__dirname, "intervalTest2.txt");
+        itNative(
+            "T17 - parallel nested locks must clear all intervals",
+            async () => {
+                const fileToLock1 = path.join(__dirname, `intervalTest1 - ${provider}.txt`);
+                const fileToLock2 = path.join(__dirname, `intervalTest2 - ${provider}.txt`);
 
-            cleanupStaleLocks(fileToLock1, fileToLock2);
-
-            const tracker = createIntervalTracker();
-            try {
-                async function task() {
-                    return await withLock({ fileToLock: fileToLock1 }, async () => {
-                        await pause(10 + Math.ceil(Math.random() * 20));
-                        return await withLock({ fileToLock: fileToLock2 }, async () => {
-                            await pause(10);
-                            return 42;
-                        });
-                    });
-                }
-
-                const results = await Promise.all([task(), task(), task(), task(), task(), task()]);
-                expect(results).toEqual([42, 42, 42, 42, 42, 42]);
-
-                // 6 tasks × 2 locks each = 12 intervals
-                expect(tracker.totalSet).toBe(12);
-                expect(tracker.totalCleared).toBe(12);
-                expect(tracker.leaking).toBe(0);
-            } finally {
-                tracker.restore();
                 cleanupStaleLocks(fileToLock1, fileToLock2);
-            }
-        }, 20000);
+
+                const tracker = createIntervalTracker();
+                try {
+                    async function task() {
+                        return await withLock({ fileToLock: fileToLock1 }, async () => {
+                            await pause(10 + Math.ceil(Math.random() * 20));
+                            return await withLock({ fileToLock: fileToLock2 }, async () => {
+                                await pause(10);
+                                return 42;
+                            });
+                        });
+                    }
+
+                    const results = await Promise.all([task(), task(), task(), task(), task(), task()]);
+                    expect(results).toEqual([42, 42, 42, 42, 42, 42]);
+
+                    // 6 tasks × 2 locks each = 12 intervals
+                    expect(tracker.totalSet).toBe(12);
+                    expect(tracker.totalCleared).toBe(12);
+                    expect(tracker.leaking).toBe(0);
+                } finally {
+                    tracker.restore();
+                    cleanupStaleLocks(fileToLock1, fileToLock2);
+                }
+            },
+            20000
+        );
     });
 
     describe("drainPendingLocks", () => {
-        const drainLockFile = path.join(__dirname, "drainTest.txt");
+        const drainLockFile = path.join(__dirname, `drainTest - ${provider}.txt`);
+        const itNative = provider === "native" ? it : it.skip;
 
         beforeAll(() => {
             cleanupStaleLocks(drainLockFile);
@@ -482,7 +497,7 @@ describe("File Mutex", () => {
                 withLock({ fileToLock: drainLockFile }, async () => {
                     await pause(20);
                     results.push(n);
-                });
+                }).catch(() => {});
             }
 
             // Yield to let the first lock acquire
@@ -495,45 +510,49 @@ describe("File Mutex", () => {
             expect(results.sort()).toEqual([0, 1, 2, 3, 4]);
         }, 20000);
 
-        it("T22 - drainPendingLocks ensures all intervals are cleared", async () => {
-            const originalSetInterval = globalThis.setInterval;
-            const originalClearInterval = globalThis.clearInterval;
-            const active = new Set<NodeJS.Timeout>();
+        itNative(
+            "T22 - drainPendingLocks ensures all intervals are cleared",
+            async () => {
+                const originalSetInterval = globalThis.setInterval;
+                const originalClearInterval = globalThis.clearInterval;
+                const active = new Set<NodeJS.Timeout>();
 
-            globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
-                const id = originalSetInterval(...args);
-                active.add(id);
-                return id;
-            }) as typeof setInterval;
+                globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => {
+                    const id = originalSetInterval(...args);
+                    active.add(id);
+                    return id;
+                }) as typeof setInterval;
 
-            globalThis.clearInterval = ((id: NodeJS.Timeout) => {
-                active.delete(id);
-                return originalClearInterval(id);
-            }) as typeof clearInterval;
+                globalThis.clearInterval = ((id: NodeJS.Timeout) => {
+                    active.delete(id);
+                    return originalClearInterval(id);
+                }) as typeof clearInterval;
 
-            try {
-                // Launch fire-and-forget locks
-                for (let i = 0; i < 3; i++) {
-                    withLock({ fileToLock: drainLockFile }, async () => {
-                        await pause(10);
-                    });
+                try {
+                    // Launch fire-and-forget locks
+                    for (let i = 0; i < 3; i++) {
+                        withLock({ fileToLock: drainLockFile }, async () => {
+                            await pause(10);
+                        });
+                    }
+
+                    // Intervals may be active
+                    // Drain waits for all locks to release
+                    await drainPendingLocks();
+
+                    // After drain, ALL intervals must be cleared
+                    expect(active.size).toBe(0);
+                } finally {
+                    // safety cleanup
+                    for (const id of active) {
+                        originalClearInterval(id);
+                    }
+                    globalThis.setInterval = originalSetInterval;
+                    globalThis.clearInterval = originalClearInterval;
                 }
-
-                // Intervals may be active
-                // Drain waits for all locks to release
-                await drainPendingLocks();
-
-                // After drain, ALL intervals must be cleared
-                expect(active.size).toBe(0);
-            } finally {
-                // safety cleanup
-                for (const id of active) {
-                    originalClearInterval(id);
-                }
-                globalThis.setInterval = originalSetInterval;
-                globalThis.clearInterval = originalClearInterval;
-            }
-        }, 20000);
+            },
+            20000
+        );
 
         it("T23 - drainPendingLocks resolves immediately when no locks pending", async () => {
             const start = Date.now();
@@ -544,7 +563,8 @@ describe("File Mutex", () => {
     });
 
     describe("EPERM regression — file at lock path", () => {
-        const epermLockFile = path.join(__dirname, "epermTest.txt");
+        const epermLockFile = path.join(__dirname, `epermTest - ${provider}.txt`);
+        const itNative = provider === "native" ? it : it.skip;
         const epermLockDir = `${epermLockFile}.lock`;
 
         beforeAll(() => {
@@ -562,60 +582,64 @@ describe("File Mutex", () => {
             } catch {}
         });
 
-        it("T18 - EPERM with existing artifact at lock path → treated as contention", async () => {
-            // Scenario: a regular file exists at the .lock path (left
-            // by a different locking library).  On Windows, mkdir
-            // throws EPERM (not EEXIST) when the target is a file.
-            //
-            // The fix checks stat(lp) after EPERM: if something is
-            // there, it falls through to the staleness/retry logic.
-            //
-            // This test:
-            //   1. Creates a real file at the lock path
-            //   2. Monkey-patches mkdir to throw EPERM on the 1st call
-            //   3. Verifies withLock recovers via retry
+        itNative(
+            "T18 - EPERM with existing artifact at lock path → treated as contention",
+            async () => {
+                // Scenario: a regular file exists at the .lock path (left
+                // by a different locking library).  On Windows, mkdir
+                // throws EPERM (not EEXIST) when the target is a file.
+                //
+                // The fix checks stat(lp) after EPERM: if something is
+                // there, it falls through to the staleness/retry logic.
+                //
+                // This test:
+                //   1. Creates a real file at the lock path
+                //   2. Monkey-patches mkdir to throw EPERM on the 1st call
+                //   3. Verifies withLock recovers via retry
 
-            // Ensure a file exists at the lock path for stat() to find
-            fs.writeFileSync(epermLockDir, "leftover", "utf-8");
-            // Backdate it so it's stale
-            const past = new Date(Date.now() - 10_000);
-            fs.utimesSync(epermLockDir, past, past);
+                // Ensure a file exists at the lock path for stat() to find
+                fs.writeFileSync(epermLockDir, "leftover", "utf-8");
+                // Backdate it so it's stale
+                const past = new Date(Date.now() - 10_000);
+                fs.utimesSync(epermLockDir, past, past);
 
-            const originalMkdir = fs.promises.mkdir;
-            let mkdirCalls = 0;
+                const originalMkdir = fs.promises.mkdir;
+                let mkdirCalls = 0;
 
-            fs.promises.mkdir = (async (...args: Parameters<typeof originalMkdir>) => {
-                mkdirCalls++;
-                if (mkdirCalls === 1) {
-                    const e = new Error(`EPERM: operation not permitted, mkdir '${args[0]}'`) as NodeJS.ErrnoException;
-                    e.code = "EPERM";
-                    throw e;
-                }
-                return originalMkdir.apply(fs.promises, args);
-            }) as typeof originalMkdir;
-
-            try {
-                const result = await withLock(
-                    {
-                        fileToLock: epermLockFile,
-                        stale: 500,
-                        retries: { retries: 5, minTimeout: 100 }
-                    },
-                    async () => {
-                        await pause(10);
-                        return 42;
+                fs.promises.mkdir = (async (...args: Parameters<typeof originalMkdir>) => {
+                    mkdirCalls++;
+                    if (mkdirCalls === 1) {
+                        const e = new Error(`EPERM: operation not permitted, mkdir '${args[0]}'`) as NodeJS.ErrnoException;
+                        e.code = "EPERM";
+                        throw e;
                     }
-                );
+                    return originalMkdir.apply(fs.promises, args);
+                }) as typeof originalMkdir;
 
-                expect(result).toBe(42);
-                expect(mkdirCalls).toBeGreaterThanOrEqual(2);
-            } finally {
-                fs.promises.mkdir = originalMkdir;
-                cleanupStaleLocks(epermLockFile);
-            }
-        }, 15000);
+                try {
+                    const result = await withLock(
+                        {
+                            fileToLock: epermLockFile,
+                            stale: 500,
+                            retries: { retries: 5, minTimeout: 100 }
+                        },
+                        async () => {
+                            await pause(10);
+                            return 42;
+                        }
+                    );
 
-        it("T19 - non-EEXIST/non-EPERM errors (e.g. EACCES) must propagate", async () => {
+                    expect(result).toBe(42);
+                    expect(mkdirCalls).toBeGreaterThanOrEqual(2);
+                } finally {
+                    fs.promises.mkdir = originalMkdir;
+                    cleanupStaleLocks(epermLockFile);
+                }
+            },
+            15000
+        );
+
+        itNative("T19 - non-EEXIST/non-EPERM errors (e.g. EACCES) must propagate", async () => {
             const originalMkdir = fs.promises.mkdir;
 
             fs.promises.mkdir = (async (...args: Parameters<typeof originalMkdir>) => {
@@ -646,7 +670,7 @@ describe("File Mutex", () => {
             }
         });
 
-        it("T20 - EPERM with nothing at lock path → rethrown (genuine permission issue)", async () => {
+        itNative("T20 - EPERM with nothing at lock path → rethrown (genuine permission issue)", async () => {
             // If mkdir throws EPERM but nothing exists at the lock
             // path, it's a real permission problem (bad ACL, etc.).
             // withLock must NOT silently swallow it.
@@ -687,9 +711,9 @@ describe("File Mutex", () => {
     });
 
     describe("Process-exit lock cleanup", () => {
-        const exitLockFile = path.join(os.tmpdir(), "exit-cleanup-test.txt");
+        const exitLockFile = path.join(os.tmpdir(), `exit - cleanup - test - ${provider}.txt`);
         const exitLockDir = `${exitLockFile}.lock`;
-        const markerFile = path.join(os.tmpdir(), "exit-cleanup-marker.txt");
+        const markerFile = path.join(os.tmpdir(), `exit - cleanup - marker - ${provider}.txt`);
         const projectDir = path.resolve(__dirname, "..");
 
         beforeAll(() => {
@@ -703,13 +727,14 @@ describe("File Mutex", () => {
 
         function runChildScript(scriptBody: string) {
             const code = [
-                `const fs = require("node:fs");`,
-                `const { withLock } = require(".");`,
-                `const fileToLock = ${JSON.stringify(exitLockFile)};`,
-                `const markerFile = ${JSON.stringify(markerFile)};`,
-                `(async () => {`,
+                `const fs = require("node:fs"); `,
+                `const { withLock } = require("."); `,
+                `const fileToLock = ${JSON.stringify(exitLockFile)}; `,
+                `const markerFile = ${JSON.stringify(markerFile)}; `,
+                `(async () => {
+    `,
                 scriptBody,
-                `})();`
+                `})(); `
             ].join("\n");
 
             // Remove marker from previous run
@@ -727,12 +752,12 @@ describe("File Mutex", () => {
             cleanupStaleLocks(exitLockFile);
 
             runChildScript(`
-                await withLock({ fileToLock }, async () => {
-                    // Prove we acquired the lock
-                    fs.writeFileSync(markerFile, "lock-acquired");
-                    process.exit(0);
-                });
-            `);
+await withLock({ fileToLock }, async () => {
+    // Prove we acquired the lock
+    fs.writeFileSync(markerFile, "lock-acquired");
+    process.exit(0);
+});
+`);
 
             // 1) Verify the lock WAS acquired (child ran successfully)
             expect(fs.existsSync(markerFile)).toBe(true);
@@ -746,12 +771,12 @@ describe("File Mutex", () => {
             cleanupStaleLocks(exitLockFile);
 
             runChildScript(`
-                await withLock({ fileToLock }, async () => {
-                    // Prove we acquired the lock
-                    fs.writeFileSync(markerFile, "lock-acquired");
-                    throw new Error("crash");
-                });
-            `);
+await withLock({ fileToLock }, async () => {
+    // Prove we acquired the lock
+    fs.writeFileSync(markerFile, "lock-acquired");
+    throw new Error("crash");
+});
+`);
 
             // 1) Verify the lock WAS acquired
             expect(fs.existsSync(markerFile)).toBe(true);

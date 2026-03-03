@@ -9,11 +9,10 @@
 A file-based mutex for Node.js — coordinate access to shared
 resources across multiple processes.
 
-Built on top of
-[proper-lockfile](https://github.com/moxystudio/node-proper-lockfile),
 `@ster5/global-mutex` provides a simple, promise-based API for
 cross-process locking with automatic stale-lock detection and retry
-support.
+support. It supports an optional robust engine using
+[proper-lockfile](https://github.com/moxystudio/node-proper-lockfile) or falls back to a zero-dependency native `fs.mkdir` locking mechanism.
 
 ## Features
 
@@ -35,6 +34,22 @@ support.
 
 ```bash
 npm install @ster5/global-mutex
+```
+
+To enable the robust lockfile engine (highly recommended to prevent race conditions on Windows), install `proper-lockfile` as a peer dependency:
+
+```bash
+npm install proper-lockfile
+```
+
+By default, the package will automatically use `proper-lockfile` if it is installed, and fall back to the native `fs.mkdir` technique if it is missing.
+
+You can explicitly force a specific provider using the `GLOBAL_MUTEX_PROVIDER` environment variable:
+
+```bash
+GLOBAL_MUTEX_PROVIDER=native node my-app.js
+# or
+GLOBAL_MUTEX_PROVIDER=proper-lockfile node my-app.js
 ```
 
 ## Usage

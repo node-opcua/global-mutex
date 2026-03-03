@@ -1,240 +1,68 @@
 import fs from "node:fs";
 import path from "node:path";
+import type { LockProvider, MutexOption } from "./interfaces";
+import { NativeLockProvider } from "./native-provider";
+import { ProperLockfileProvider } from "./proper-lockfile-provider";
+
+export * from "./interfaces";
 
 export const defaultStaleDuration = 2 * 60 * 1000; // two minutes
 
 // ---------------------------------------------------------------------------
-// Types
+// Lock provider management
 // ---------------------------------------------------------------------------
 
-export interface RetryOptions {
-    /** Maximum number of retries (default: 10 when object, 0 when number). */
-    retries?: number;
-    /** Retry forever, ignoring `retries` count. */
-    forever?: boolean;
-    /** Minimum retry delay in ms (default: 1000). */
-    minTimeout?: number;
-    /** Maximum retry delay in ms (default: Infinity). */
-    maxTimeout?: number;
-    /** Randomize (jitter) the delay (default: false). */
-    randomize?: boolean;
-    /** Abort retries after this many ms total (default: Infinity). */
-    maxRetryTime?: number;
+let overriddenProviderType: "native" | "proper-lockfile" | undefined;
+let _resolvedProvider: LockProvider | undefined;
+
+export function setLockProvider(type: "native" | "proper-lockfile") {
+    overriddenProviderType = type;
+    _resolvedProvider = undefined; // force re-evaluation
 }
 
-export interface MutexOption {
-    /** Path to the file to lock. Created automatically if absent. */
-    fileToLock: string;
-    /** Duration in ms after which a lock is considered stale. */
-    stale?: number;
-    /** Interval in ms between lock-refresh touches (default: stale / 2). */
-    update?: number;
-    /** Retry configuration: a count, a full options object, or undefined for "forever". */
-    retries?: number | RetryOptions;
-    /** Called if the lock is compromised (removed externally) while held. */
-    onCompromised?: (err: Error) => void;
-}
+async function getProvider(): Promise<LockProvider> {
+    if (_resolvedProvider) return _resolvedProvider;
 
-// ---------------------------------------------------------------------------
-// Internal state
-// ---------------------------------------------------------------------------
+    let targetType = overriddenProviderType;
 
-interface ActiveLock {
-    timer: NodeJS.Timeout;
-    released: boolean;
-}
-
-const activeLocks = new Map<string, ActiveLock>();
-const pendingLocks = new Set<Promise<unknown>>();
-
-// ---------------------------------------------------------------------------
-// Process-exit cleanup
-// ---------------------------------------------------------------------------
-
-let exitHandlerRegistered = false;
-
-/**
- * Synchronously remove all lock directories held by THIS process.
- * Called on process exit so that locks don't leak to disk.
- */
-function cleanupLocksOnExit(): void {
-    for (const [lp, entry] of activeLocks) {
-        if (!entry.released) {
-            entry.released = true;
-            clearInterval(entry.timer);
-            try {
-                fs.rmSync(lp, { recursive: true, force: true });
-            } catch {
-                /* best-effort cleanup */
-            }
+    // Check environment variable
+    if (!targetType) {
+        const envType = process.env.GLOBAL_MUTEX_PROVIDER;
+        if (envType === "native" || envType === "proper-lockfile") {
+            targetType = envType;
+            console.log(`[global-mutex] Forcing lock provider to '${envType}' as specified by GLOBAL_MUTEX_PROVIDER env variable.`);
         }
     }
-    activeLocks.clear();
-}
 
-function ensureExitHandler(): void {
-    if (exitHandlerRegistered) return;
-    exitHandlerRegistered = true;
-    process.on("exit", cleanupLocksOnExit);
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-function lockPath(fileToLock: string): string {
-    return `${fileToLock}.lock`;
-}
-
-function sleep(ms: number): Promise<void> {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-interface NormalizedRetry {
-    maxAttempts: number;
-    minTimeout: number;
-    maxTimeout: number;
-    randomize: boolean;
-    maxRetryTime: number;
-}
-
-function normalizeRetry(retries: number | RetryOptions | undefined): NormalizedRetry {
-    if (retries === undefined) {
-        // Default: retry forever with jitter
-        return {
-            maxAttempts: Number.POSITIVE_INFINITY,
-            minTimeout: 100,
-            maxTimeout: 2000,
-            randomize: true,
-            maxRetryTime: Number.POSITIVE_INFINITY
-        };
+    // Default target
+    if (!targetType) {
+        targetType = "proper-lockfile";
     }
-    if (typeof retries === "number") {
-        return {
-            maxAttempts: retries,
-            minTimeout: 1000,
-            maxTimeout: Number.POSITIVE_INFINITY,
-            randomize: false,
-            maxRetryTime: Number.POSITIVE_INFINITY
-        };
-    }
-    const maxAttempts = retries.forever ? Number.POSITIVE_INFINITY : (retries.retries ?? 10);
-    return {
-        maxAttempts,
-        minTimeout: retries.minTimeout ?? 1000,
-        maxTimeout: retries.maxTimeout ?? Number.POSITIVE_INFINITY,
-        randomize: retries.randomize ?? false,
-        maxRetryTime: retries.maxRetryTime ?? Number.POSITIVE_INFINITY
-    };
-}
 
-function retryDelay(r: NormalizedRetry, attempt: number): number {
-    let d = Math.min(r.minTimeout * 2 ** attempt, r.maxTimeout);
-    if (r.randomize) {
-        d = Math.floor((d * (1 + Math.random())) / 2);
-    }
-    return d;
-}
-
-async function isStale(lp: string, staleDuration: number): Promise<boolean> {
-    try {
-        const stat = await fs.promises.stat(lp);
-        return Date.now() - stat.mtimeMs > staleDuration;
-    } catch {
-        return true; // directory gone → treat as stale
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Lock / unlock primitives
-// ---------------------------------------------------------------------------
-
-async function acquireLock(
-    lp: string,
-    stale: number,
-    retry: NormalizedRetry,
-    update: number,
-    onCompromised?: (err: Error) => void
-): Promise<void> {
-    const startTime = Date.now();
-    let attempt = 0;
-
-    for (;;) {
+    if (targetType === "proper-lockfile") {
         try {
-            await fs.promises.mkdir(lp);
-
-            // — Lock acquired — register exit cleanup + start refresh timer
-            ensureExitHandler();
-            const timer = setInterval(async () => {
-                const entry = activeLocks.get(lp);
-                if (!entry || entry.released) return;
-                try {
-                    const now = new Date();
-                    await fs.promises.utimes(lp, now, now);
-                } catch (err) {
-                    if (onCompromised) {
-                        onCompromised(err as Error);
-                    }
-                }
-            }, update);
-            timer.unref();
-            activeLocks.set(lp, { timer, released: false });
-            return;
-        } catch (err: unknown) {
-            const code = (err as NodeJS.ErrnoException).code;
-
-            if (code === "EEXIST") {
-                // Normal contention — lock dir already exists
-            } else if (code === "EPERM") {
-                // On Windows, mkdir can throw EPERM when the lock
-                // path already exists as a regular file (e.g.
-                // leftover from a different locking library).
-                // Disambiguate from genuine permission issues by
-                // checking whether something actually exists at lp.
-                try {
-                    await fs.promises.stat(lp);
-                    // Something exists → treat like EEXIST below
-                } catch {
-                    // Nothing at lp → real permission problem
-                    throw err;
-                }
-            } else {
-                throw err;
+            // Test that proper-lockfile is loadable before instantiating its class
+            await import("proper-lockfile");
+            _resolvedProvider = new ProperLockfileProvider();
+            return _resolvedProvider;
+        } catch (_e) {
+            // Not available
+            if (overriddenProviderType === "proper-lockfile" || process.env.GLOBAL_MUTEX_PROVIDER === "proper-lockfile") {
+                console.warn(
+                    "[global-mutex] proper-lockfile was explicitly requested but is not installed. Falling back to native provider."
+                );
             }
-
-            // Lock directory exists — check staleness
-            if (await isStale(lp, stale)) {
-                try {
-                    await fs.promises.rm(lp, { recursive: true, force: true });
-                } catch {
-                    /* another process may have removed it */
-                }
-                continue; // retry immediately after removing a stale lock
-            }
-
-            // Not stale — obey retry limits
-            if (attempt >= retry.maxAttempts) {
-                throw new Error("Lock file is already being held");
-            }
-            if (Date.now() - startTime >= retry.maxRetryTime) {
-                throw new Error("Lock file is already being held");
-            }
-
-            await sleep(retryDelay(retry, attempt));
-            attempt++;
+            // Fallback to native
+            _resolvedProvider = new NativeLockProvider();
+            return _resolvedProvider;
         }
     }
+
+    _resolvedProvider = new NativeLockProvider();
+    return _resolvedProvider;
 }
 
-async function releaseLock(lp: string): Promise<void> {
-    const entry = activeLocks.get(lp);
-    if (entry) {
-        entry.released = true;
-        clearInterval(entry.timer);
-        activeLocks.delete(lp);
-    }
-    await fs.promises.rm(lp, { recursive: true, force: true });
-}
+const pendingLocks = new Set<Promise<unknown>>();
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -242,22 +70,10 @@ async function releaseLock(lp: string): Promise<void> {
 
 /**
  * Acquire a file-based mutex, execute `action`, then release.
- *
- * The lock is implemented as a directory (`<fileToLock>.lock`)
- * created atomically via `mkdir`.  A background timer refreshes
- * the directory mtime to prevent stale-lock detection while the
- * action is running.
  */
 export async function withLock<T>(options: MutexOption, action: () => Promise<T>): Promise<T> {
-    const { fileToLock, stale = defaultStaleDuration, update, retries, onCompromised } = options;
+    const { fileToLock } = options;
 
-    const retry = normalizeRetry(retries);
-    const updateInterval = update ?? Math.floor(stale / 2);
-
-    // The entire lock lifecycle is wrapped in an IIFE so the promise
-    // is created synchronously and added to pendingLocks BEFORE any
-    // async work begins.  This ensures fire-and-forget callers can
-    // later call drainPendingLocks() and find all in-flight operations.
     const lockPromise = (async () => {
         // Validate parent directory
         try {
@@ -273,14 +89,14 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
             if ((e as NodeJS.ErrnoException).code !== "EEXIST") throw e;
         }
 
-        const lp = lockPath(fileToLock);
+        const provider = await getProvider();
+        const release = await provider.acquire(options);
 
-        await acquireLock(lp, stale, retry, updateInterval, onCompromised);
         try {
             return await action();
         } finally {
             try {
-                await releaseLock(lp);
+                await release();
             } catch (err) {
                 /* v8 ignore next */
                 console.warn("Error in Unlock !!!", (err as Error).message);
@@ -289,8 +105,6 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
     })();
 
     // Register synchronously — before the first await above runs.
-    // Use .then(fn, fn) instead of .finally(fn) to avoid creating
-    // a derived promise that propagates rejections as unhandled.
     pendingLocks.add(lockPromise);
     const cleanup = () => pendingLocks.delete(lockPromise);
     lockPromise.then(cleanup, cleanup);
@@ -302,21 +116,16 @@ export async function withLock<T>(options: MutexOption, action: () => Promise<T>
  * Check whether a file is currently locked.
  */
 export async function isLocked(fileToLock: string): Promise<boolean> {
-    try {
-        await fs.promises.access(lockPath(fileToLock));
-        return true;
-    } catch {
-        return false;
-    }
+    const provider = await getProvider();
+    return provider.isLocked(fileToLock);
 }
 
 /**
  * Wait for all in-flight `withLock` operations to complete.
- *
- * Call this during graceful shutdown to ensure all lock intervals
- * are properly cleared before the process exits or a leak detector
- * runs. Resolves once every pending `withLock` promise has settled.
  */
 export async function drainPendingLocks(): Promise<void> {
+    if (_resolvedProvider) {
+        await _resolvedProvider.drainPendingLocks();
+    }
     await Promise.allSettled([...pendingLocks]);
 }
