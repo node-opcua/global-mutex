@@ -9,5 +9,6 @@ export default defineConfig({
     clean: true,
     target: "es2022",
     minify: false,
-    shims: true
+    shims: true,
+    external: ["proper-lockfile"]
 });
