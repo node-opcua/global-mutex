@@ -792,4 +792,57 @@ await withLock({ fileToLock }, async () => {
             expect(fs.existsSync(exitLockDir)).toBe(false);
         });
     });
+
+    describe("Cross-process locking", () => {
+        it("T24 - should block another process from acquiring lock until released", async () => {
+            const crossProcessFile = path.join(os.tmpdir(), `cross-process - ${provider}.txt`);
+            cleanupStaleLocks(crossProcessFile);
+
+            const { spawn } = require("node:child_process") as typeof import("node:child_process");
+
+            const code = [
+                `const { withLock } = require(".");`,
+                `const fileToLock = ${JSON.stringify(crossProcessFile)};`,
+                `(async () => {
+                    await withLock({ fileToLock, stale: 5000 }, async () => {
+                        console.log("child-acquired");
+                        await new Promise(r => setTimeout(r, 1200));
+                        console.log("child-releasing");
+                    });
+                })();`
+            ].join("\n");
+
+            const child = spawn(process.execPath, ["-e", code], {
+                cwd: path.resolve(__dirname, ".."),
+                stdio: "pipe"
+            });
+
+            // wait for child to say it acquired the lock
+            await new Promise<void>((resolve, reject) => {
+                child.stdout.on("data", (d) => {
+                    if (d.toString().includes("child-acquired")) resolve();
+                });
+                child.on("error", reject);
+                child.on("exit", () => reject(new Error("Child exited before acquiring lock")));
+            });
+
+            const start = Date.now();
+            let parentAcquired = false;
+
+            await withLock(
+                { fileToLock: crossProcessFile, retries: { retries: 15, minTimeout: 100, maxTimeout: 200 } },
+                async () => {
+                    parentAcquired = true;
+                }
+            );
+
+            const elapsed = Date.now() - start;
+
+            expect(parentAcquired).toBe(true);
+            expect(elapsed).toBeGreaterThanOrEqual(1000); // Because it had to wait for the child lock
+
+            child.kill();
+            cleanupStaleLocks(crossProcessFile);
+        });
+    });
 });
