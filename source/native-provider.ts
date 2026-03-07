@@ -112,12 +112,12 @@ export class NativeLockProvider implements LockProvider {
 
                 // — Lock acquired — register exit cleanup + start refresh timer
                 this.ensureExitHandler();
-                const timer = setInterval(async () => {
+                const timer = setInterval(() => {
                     const entry = this.activeLocks.get(lp);
                     if (!entry || entry.released) return;
                     try {
                         const now = new Date();
-                        await fs.promises.utimes(lp, now, now);
+                        fs.utimesSync(lp, now, now);
                     } catch (err) {
                         if (onCompromised) {
                             onCompromised(err as Error);
@@ -140,7 +140,7 @@ export class NativeLockProvider implements LockProvider {
                     // Disambiguate from genuine permission issues by
                     // checking whether something actually exists at lp.
                     try {
-                        await fs.promises.stat(lp);
+                        fs.statSync(lp);
                         // Something exists → treat like EEXIST below
                     } catch {
                         // Do not throw err here on EPERM stat failure.
@@ -178,14 +178,14 @@ export class NativeLockProvider implements LockProvider {
         }
     }
 
-    private async releaseLock(lp: string): Promise<void> {
+    private releaseLock(lp: string): void {
         const entry = this.activeLocks.get(lp);
         if (entry) {
             entry.released = true;
             clearInterval(entry.timer);
             this.activeLocks.delete(lp);
         }
-        await fs.promises.rm(lp, { recursive: true, force: true });
+        fs.rmSync(lp, { recursive: true, force: true });
     }
 
     public async acquire(options: MutexOption): Promise<() => Promise<void>> {
@@ -198,7 +198,7 @@ export class NativeLockProvider implements LockProvider {
         await this.acquireLock(lp, stale, retry, updateInterval, onCompromised);
 
         return async () => {
-            await this.releaseLock(lp);
+            this.releaseLock(lp);
         };
     }
 

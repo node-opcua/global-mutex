@@ -474,6 +474,51 @@ describe.each(providersToTest)("File Mutex with provider %s", (provider) => {
             },
             20000
         );
+
+        itNative(
+            "T25 - high contention must not leak intervals (EBUSY reproducer)",
+            async () => {
+                const contentionFile = path.join(__dirname, `contentionTest - ${provider}.txt`);
+                cleanupStaleLocks(contentionFile);
+
+                const tracker = createIntervalTracker();
+                try {
+                    const concurrency = 20;
+                    const promises: Promise<number>[] = [];
+                    for (let i = 0; i < concurrency; i++) {
+                        promises.push(
+                            withLock(
+                                {
+                                    fileToLock: contentionFile,
+                                    // Short update interval to maximize timer
+                                    // overlaps with release — this was the
+                                    // trigger for the async utimes EBUSY race
+                                    update: 50,
+                                    stale: 5000
+                                },
+                                async () => {
+                                    await pause(5 + Math.ceil(Math.random() * 10));
+                                    return 42;
+                                }
+                            )
+                        );
+                    }
+
+                    const results = await Promise.all(promises);
+                    expect(results).toEqual(Array(concurrency).fill(42));
+
+                    // Every withLock must have paired its setInterval
+                    // with a clearInterval — zero leaks
+                    expect(tracker.totalSet).toBe(concurrency);
+                    expect(tracker.totalCleared).toBe(concurrency);
+                    expect(tracker.leaking).toBe(0);
+                } finally {
+                    tracker.restore();
+                    cleanupStaleLocks(contentionFile);
+                }
+            },
+            30000
+        );
     });
 
     describe("drainPendingLocks", () => {
