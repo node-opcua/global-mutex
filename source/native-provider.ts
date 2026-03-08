@@ -4,6 +4,7 @@ import type { LockProvider, MutexOption, RetryOptions } from "./interfaces";
 export const defaultStaleDuration = 2 * 60 * 1000; // two minutes
 
 interface ActiveLock {
+    lockPath: string;
     timer: NodeJS.Timeout;
     released: boolean;
 }
@@ -72,16 +73,17 @@ async function isStale(lp: string, staleDuration: number): Promise<boolean> {
 }
 
 export class NativeLockProvider implements LockProvider {
-    private activeLocks = new Map<string, ActiveLock>();
+    private activeLocks = new Map<number, ActiveLock>();
+    private nextLockId = 0;
     private exitHandlerRegistered = false;
 
     private cleanupLocksOnExit = () => {
-        for (const [lp, entry] of this.activeLocks) {
+        for (const [, entry] of this.activeLocks) {
             if (!entry.released) {
                 entry.released = true;
                 clearInterval(entry.timer);
                 try {
-                    fs.rmSync(lp, { recursive: true, force: true });
+                    fs.rmSync(entry.lockPath, { recursive: true, force: true });
                 } catch {
                     /* best-effort cleanup */
                 }
@@ -102,7 +104,7 @@ export class NativeLockProvider implements LockProvider {
         retry: NormalizedRetry,
         update: number,
         onCompromised?: (err: Error) => void
-    ): Promise<void> {
+    ): Promise<number> {
         const startTime = Date.now();
         let attempt = 0;
 
@@ -112,8 +114,9 @@ export class NativeLockProvider implements LockProvider {
 
                 // — Lock acquired — register exit cleanup + start refresh timer
                 this.ensureExitHandler();
+                const lockId = this.nextLockId++;
                 const timer = setInterval(() => {
-                    const entry = this.activeLocks.get(lp);
+                    const entry = this.activeLocks.get(lockId);
                     if (!entry || entry.released) return;
                     try {
                         const now = new Date();
@@ -125,8 +128,8 @@ export class NativeLockProvider implements LockProvider {
                     }
                 }, update);
                 timer.unref();
-                this.activeLocks.set(lp, { timer, released: false });
-                return;
+                this.activeLocks.set(lockId, { lockPath: lp, timer, released: false });
+                return lockId;
             } catch (err: unknown) {
                 const code = (err as NodeJS.ErrnoException).code;
 
@@ -178,14 +181,14 @@ export class NativeLockProvider implements LockProvider {
         }
     }
 
-    private releaseLock(lp: string): void {
-        const entry = this.activeLocks.get(lp);
+    private releaseLock(lockId: number): void {
+        const entry = this.activeLocks.get(lockId);
         if (entry) {
             entry.released = true;
             clearInterval(entry.timer);
-            this.activeLocks.delete(lp);
+            this.activeLocks.delete(lockId);
+            fs.rmSync(entry.lockPath, { recursive: true, force: true });
         }
-        fs.rmSync(lp, { recursive: true, force: true });
     }
 
     public async acquire(options: MutexOption): Promise<() => Promise<void>> {
@@ -195,10 +198,10 @@ export class NativeLockProvider implements LockProvider {
         const updateInterval = update ?? Math.floor(stale / 2);
         const lp = lockPath(fileToLock);
 
-        await this.acquireLock(lp, stale, retry, updateInterval, onCompromised);
+        const lockId = await this.acquireLock(lp, stale, retry, updateInterval, onCompromised);
 
         return async () => {
-            this.releaseLock(lp);
+            this.releaseLock(lockId);
         };
     }
 
