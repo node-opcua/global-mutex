@@ -890,4 +890,35 @@ await withLock({ fileToLock }, async () => {
             cleanupStaleLocks(crossProcessFile);
         });
     });
+
+    describe("isLocked stale-lock false positive", () => {
+        const staleLockFile = path.join(__dirname, `staleLockTest - ${provider}.txt`);
+        const staleLockDir = `${staleLockFile}.lock`;
+
+        beforeAll(() => {
+            cleanupStaleLocks(staleLockFile);
+        });
+        afterAll(() => {
+            cleanupStaleLocks(staleLockFile);
+        });
+
+        it("T26 - isLocked should return false for a stale orphaned lock", async () => {
+            // Ensure the target file exists (withLock creates it, but
+            // we need it for isLocked)
+            fs.writeFileSync(staleLockFile, "", { flag: "w" });
+
+            // Simulate a killed process: create the lock directory and
+            // backdate its mtime well past the stale duration
+            fs.mkdirSync(staleLockDir, { recursive: true });
+            const past = new Date(Date.now() - 5 * 60 * 1000); // 5 min ago
+            fs.utimesSync(staleLockDir, past, past);
+
+            // The lock directory exists but is clearly stale — no
+            // process is refreshing its mtime.
+            // isLocked() should recognise this and return false.
+            const locked = await isLocked(staleLockFile);
+
+            expect(locked).toBe(false);
+        });
+    });
 });

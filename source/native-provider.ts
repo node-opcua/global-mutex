@@ -206,24 +206,15 @@ export class NativeLockProvider implements LockProvider {
     }
 
     public async isLocked(fileToLock: string): Promise<boolean> {
+        const lp = lockPath(fileToLock);
         try {
-            await fs.promises.access(lockPath(fileToLock));
-            return true;
+            await fs.promises.access(lp);
+            // Lock dir exists — but is it stale (orphaned)?
+            return !(await isStale(lp, defaultStaleDuration));
         } catch {
             return false;
         }
     }
 
-    public async drainPendingLocks(): Promise<void> {
-        // Since we moved pendingLocks tracking to the provider level,
-        // we need to keep track of the promises. But the actual tracking
-        // happens inside index.ts withLock method which wraps these.
-        // So for the legacy provider itself, drainPendingLocks only needs
-        // to handle what it specifically manages if anything.
-        // Currently, index.ts managed `pendingLocks`.
-        // We will move that logic into `index.ts` top level so `drainPendingLocks`
-        // is actually universal, or we track it here.
-        // It's cleaner to track pending operations per-provider or globally in index.js.
-        // Let's implement an empty drain here and handle `pendingLocks` globally in `index.ts`.
-    }
+    public async drainPendingLocks(): Promise<void> {}
 }
